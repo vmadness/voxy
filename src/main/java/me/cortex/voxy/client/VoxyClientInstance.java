@@ -25,24 +25,38 @@ public class VoxyClientInstance extends VoxyInstance {
 
     public VoxyClientInstance() {
         //1.21.1/Java 21 port: flexible constructor bodies (statements before super()) are a Java 25
-        //language feature and aren't available on Java 21, so super() has to be first; field setup
-        //that used to run before it is unaffected since super() here takes no arguments.
-        super();
-        {
-            var path = FlashbackCompat.getReplayStoragePath();
-            this.noIngestOverride = path != null;
-            if (path == null) {
-                path = getBasePath();
-            }
-            var basePath = this.basePath = path.normalize();
-            this.config = StorageConfigUtil.getCreateStorageConfig(Config.class, c->c.version==1&&c.sectionStorageConfig!=null, ()->DEFAULT_STORAGE_CONFIG, basePath);
-        }
+        //language feature not available on Java 21, so super() must be the first statement and no
+        //field of this class can be assigned before it runs. That breaks the old pattern of
+        //overriding shouldCreateInstance() to read this.config: VoxyInstance's constructor calls
+        //shouldCreateInstance() virtually while still inside super(), i.e. before any of this
+        //class's field initializers or constructor-body assignments have executed, so this.config
+        //would still be null (NPE). Instead, load the config into a local variable as part of the
+        //super(...) argument expression (which only touches locals, never subclass fields, so it's
+        //legal before super()), and pass the resulting boolean straight into VoxyInstance's
+        //boolean-taking constructor. Fields are then assigned from the same locals after super()
+        //returns, same as before.
+        this(loadConfig());
+    }
+
+    private VoxyClientInstance(Init init) {
+        super(!init.config.disabled);
+        this.noIngestOverride = init.noIngestOverride;
+        this.basePath = init.basePath;
+        this.config = init.config;
         this.updateDedicatedThreads();
     }
 
-    @Override
-    protected boolean shouldCreateInstance() {
-        return !this.config.disabled;
+    private record Init(Path basePath, boolean noIngestOverride, Config config) {}
+
+    private static Init loadConfig() {
+        var path = FlashbackCompat.getReplayStoragePath();
+        boolean noIngestOverride = path != null;
+        if (path == null) {
+            path = getBasePath();
+        }
+        var basePath = path.normalize();
+        var config = StorageConfigUtil.getCreateStorageConfig(Config.class, c->c.version==1&&c.sectionStorageConfig!=null, ()->DEFAULT_STORAGE_CONFIG, basePath);
+        return new Init(basePath, noIngestOverride, config);
     }
 
     @Override

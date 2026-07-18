@@ -32,6 +32,9 @@ public abstract class VoxyInstance {
     protected final ImportManager importManager;
 
     public VoxyInstance() {
+        //Default path: shouldCreateInstance() is called virtually with no subclass state assumed
+        //(the base implementation just returns true, and this is only safe for overrides that don't
+        //depend on subclass fields - see the other constructor below for the case that does).
         if (!this.shouldCreateInstance()) {
             throw new DontCreateInstance();
         }
@@ -41,7 +44,37 @@ public abstract class VoxyInstance {
         this.ingestService = new VoxelIngestService(this.getServiceManager());
         this.importManager = this.createImportManager();
         this.savingServiceRateLimiter = ()->this.savingService.getTaskCount()<1200;
-        this.worldCleaner = new Thread(()->{
+        this.worldCleaner = makeWorldCleanerThread();
+        this.worldCleaner.start();
+    }
+
+    /**
+     * Java 21 requires super() to be the first statement in a subclass constructor (unlike the dev
+     * branch's Java 25 flexible constructor bodies, which let a subclass run field-setup - e.g. loading
+     * its own config - before calling super()). That means a subclass can no longer assign its own
+     * fields before super() runs, so if shouldCreateInstance() is overridden and depends on such
+     * subclass state (as VoxyClientInstance's does, on its config field), calling it virtually from here
+     * would read uninitialized subclass state. Subclasses in that situation should instead evaluate the
+     * condition themselves - using only local variables, as part of their super(...) call's argument
+     * list, before any subclass fields are assigned - and pass the result straight into this
+     * constructor.
+     */
+    protected VoxyInstance(boolean shouldCreateInstance) {
+        if (!shouldCreateInstance) {
+            throw new DontCreateInstance();
+        }
+        Logger.info("Initializing voxy instance");
+        this.threadPool = new UnifiedServiceThreadPool();
+        this.savingService = new SectionSavingService(this.getServiceManager());
+        this.ingestService = new VoxelIngestService(this.getServiceManager());
+        this.importManager = this.createImportManager();
+        this.savingServiceRateLimiter = ()->this.savingService.getTaskCount()<1200;
+        this.worldCleaner = makeWorldCleanerThread();
+        this.worldCleaner.start();
+    }
+
+    private Thread makeWorldCleanerThread() {
+        var thread = new Thread(()->{
             try {
                 while (this.isRunning) {
                     //noinspection BusyWait
@@ -54,10 +87,10 @@ public abstract class VoxyInstance {
                 Logger.error("Exception in world cleaner",e);
             }
         });
-        this.worldCleaner.setPriority(Thread.MIN_PRIORITY);
-        this.worldCleaner.setName("Active world cleaner");
-        this.worldCleaner.setDaemon(true);
-        this.worldCleaner.start();
+        thread.setPriority(Thread.MIN_PRIORITY);
+        thread.setName("Active world cleaner");
+        thread.setDaemon(true);
+        return thread;
     }
 
     protected boolean shouldCreateInstance() {
