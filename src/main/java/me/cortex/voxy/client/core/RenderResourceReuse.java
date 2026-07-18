@@ -11,8 +11,11 @@ import me.cortex.voxy.common.util.TrackedObject;
 import java.util.ArrayList;
 
 import static org.lwjgl.opengl.ARBSparseBuffer.GL_SPARSE_STORAGE_BIT_ARB;
+import static org.lwjgl.opengl.ARBSparseBuffer.glBufferPageCommitmentARB;
 import static org.lwjgl.opengl.GL11.GL_RGBA8;
 import static org.lwjgl.opengl.GL11C.*;
+import static org.lwjgl.opengl.GL15C.GL_ARRAY_BUFFER;
+import static org.lwjgl.opengl.GL15C.glBindBuffer;
 
 //System to allow reuse/recycling of render buffer/texture allocations
 // specfically the geometry buffer and texture atlas allocation
@@ -23,7 +26,7 @@ public class RenderResourceReuse {
     //Clears and frees any cached resources (used when the entire instance is shutdown)
     public static void clearResources() {
         MODEL_TEXTURE_CACHE.forEach(TrackedObject::free);
-        GEOMETRY_BUFFER_CACHE.forEach(TrackedObject::free);
+        GEOMETRY_BUFFER_CACHE.forEach(RenderResourceReuse::destroyGeometryBuffer);
         MODEL_TEXTURE_CACHE.clear();
         GEOMETRY_BUFFER_CACHE.clear();
     }
@@ -95,6 +98,30 @@ public class RenderResourceReuse {
 
     public static void giveBackGeometryBuffer(GlBuffer geometryBuffer) {
         GEOMETRY_BUFFER_CACHE.add(geometryBuffer);
+    }
+
+    // Sparse pages remain committed while a buffer is cached. NVIDIA is sensitive to rapid
+    // decommit/recommit cycles of this large allocation during Iris renderer recreation.
+    public static void destroyGeometryBuffer(GlBuffer geometryBuffer) {
+        if (geometryBuffer.isSparse()) {
+            long commitment = geometryBuffer.getSparseCommitment();
+            long pageSize = geometryBuffer.getSparsePageSize();
+            if (pageSize <= 0) {
+                throw new IllegalStateException("Sparse geometry buffer has no page size");
+            }
+            long maxCommitment = geometryBuffer.size() - geometryBuffer.size()%pageSize;
+            if (commitment < 0 || commitment > maxCommitment ||
+                    commitment%pageSize != 0) {
+                throw new IllegalStateException("Invalid sparse geometry buffer commitment range");
+            }
+            if (commitment != 0) {
+                glBindBuffer(GL_ARRAY_BUFFER, geometryBuffer.id);
+                glBufferPageCommitmentARB(GL_ARRAY_BUFFER, 0, commitment, false);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                geometryBuffer.setSparseCommitment(0);
+            }
+        }
+        geometryBuffer.free();
     }
 
     private static long getGeometryBufferSize() {

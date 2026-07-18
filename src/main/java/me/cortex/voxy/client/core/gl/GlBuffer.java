@@ -6,6 +6,7 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.system.MemoryUtil;
 
 import static org.lwjgl.opengl.ARBSparseBuffer.GL_SPARSE_STORAGE_BIT_ARB;
+import static org.lwjgl.opengl.ARBSparseBuffer.GL_SPARSE_BUFFER_PAGE_SIZE_ARB;
 import static org.lwjgl.opengl.GL11.GL_UNSIGNED_BYTE;
 import static org.lwjgl.opengl.GL15.glDeleteBuffers;
 import static org.lwjgl.opengl.GL45C.*;
@@ -14,9 +15,12 @@ public class GlBuffer extends TrackedObject {
     public final int id;
     private final long size;
     private final int flags;
+    private final long sparsePageSize;
+    private long sparseCommitment;
 
     private static int COUNT;
     private static long TOTAL_SIZE;
+    private static long globalSparsePageSize = -1;
 
     public GlBuffer(long size) {
         this(size, 0);
@@ -43,6 +47,8 @@ public class GlBuffer extends TrackedObject {
         this.id = glCreateBuffers();
         this.size = size;
         nglNamedBufferStorage(this.id, size, data, flags);
+        this.sparsePageSize = (flags&GL_SPARSE_STORAGE_BIT_ARB) != 0
+                ? getGlobalSparsePageSize() : 0;
         if ((flags&GL_SPARSE_STORAGE_BIT_ARB)==0 && zero) {
             this.zero();
         }
@@ -62,6 +68,25 @@ public class GlBuffer extends TrackedObject {
 
     public boolean isSparse() {
         return (this.flags&GL_SPARSE_STORAGE_BIT_ARB)!=0;
+    }
+
+    public long getSparseCommitment() {
+        return this.sparseCommitment;
+    }
+
+    public long getSparsePageSize() {
+        return this.sparsePageSize;
+    }
+
+    private static long getGlobalSparsePageSize() {
+        if (globalSparsePageSize == -1) {
+            globalSparsePageSize = org.lwjgl.opengl.GL11C.glGetInteger(GL_SPARSE_BUFFER_PAGE_SIZE_ARB);
+        }
+        return globalSparsePageSize;
+    }
+
+    public void setSparseCommitment(long sparseCommitment) {
+        this.sparseCommitment = sparseCommitment;
     }
 
     public long size() {

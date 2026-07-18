@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core.rendering.section.geometry;
 
+import me.cortex.voxy.client.core.RenderResourceReuse;
 import me.cortex.voxy.client.core.gl.Capabilities;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.common.Logger;
@@ -28,6 +29,7 @@ public class BasicSectionGeometryData implements IGeometryData {
             throw new IllegalStateException();
         }
         this.geometryBuffer = geometryBuffer;
+        this.sparseCommitment = geometryBuffer.getSparseCommitment();
         this.isExternalGeometryBuffer = true;
     }
 
@@ -74,24 +76,43 @@ public class BasicSectionGeometryData implements IGeometryData {
             }
         }
         this.geometryBuffer = buffer;
+        this.sparseCommitment = buffer.getSparseCommitment();
         long delta = System.currentTimeMillis() - start;
         Logger.info("Successfully allocated the geometry buffer in " + delta + "ms");
     }
 
     private long sparseCommitment = 0;//Tracks the current range of the allocated sparse buffer
     public void ensureAccessable(int maxElementAccess) {
-        long size = (Integer.toUnsignedLong(maxElementAccess)*8L+65535L)&~65535L;
         //If we are a sparse buffer, ensure the memory upto the requested size is allocated
         if (this.geometryBuffer.isSparse()) {
-            if (this.sparseCommitment < size) {//if we try to access memory outside the allocation range, allocate it
+            long pageSize = this.geometryBuffer.getSparsePageSize();
+            if (pageSize <= 0) {
+                throw new IllegalStateException("Sparse geometry buffer has no page size");
+            }
+            long requiredSize = alignUp(Integer.toUnsignedLong(maxElementAccess)*8L, pageSize);
+            if (this.sparseCommitment < requiredSize) {//if we try to access memory outside the allocation range, allocate it
+                long maxCommitment = this.geometryBuffer.size() - this.geometryBuffer.size()%pageSize;
+                if (requiredSize > maxCommitment) {
+                    throw new IllegalStateException("Sparse geometry access exceeds buffer capacity");
+                }
                 glBindBuffer(GL_ARRAY_BUFFER, this.geometryBuffer.id);
-                size += 65536L*1024;//increase size by 64mb to prevent driver allocation thrashing
+                long size = Math.min(alignUp(requiredSize + 65536L*1024, pageSize), maxCommitment);//increase size by 64mb to prevent driver allocation thrashing
+                if (this.sparseCommitment < 0 || this.sparseCommitment > size ||
+                        this.sparseCommitment%pageSize != 0 || size%pageSize != 0) {
+                    glBindBuffer(GL_ARRAY_BUFFER, 0);
+                    throw new IllegalStateException("Invalid sparse geometry buffer commitment range");
+                }
                 glBufferPageCommitmentARB(GL_ARRAY_BUFFER, this.sparseCommitment, size-this.sparseCommitment, true);
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
                 //Logger.info("Resizing sparse: " + this.sparseCommitment + ", " + (size-this.sparseCommitment));
                 this.sparseCommitment = size;
+                this.geometryBuffer.setSparseCommitment(size);
             }
         }
+    }
+
+    private static long alignUp(long value, long alignment) {
+        return ((value + alignment - 1)/alignment)*alignment;
     }
 
     public GlBuffer getGeometryBuffer() {
@@ -128,16 +149,10 @@ public class BasicSectionGeometryData implements IGeometryData {
             glFinish();
             gpuMemory = Capabilities.INSTANCE.getFreeDedicatedGpuMemory();
         }
-        if (this.geometryBuffer.isSparse()) {
-            glBindBuffer(GL_ARRAY_BUFFER, this.geometryBuffer.id);
-            glBufferPageCommitmentARB(GL_ARRAY_BUFFER, 0, this.sparseCommitment, false);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-        }
-
         glFinish();
 
         if (!this.isExternalGeometryBuffer) {
-            this.geometryBuffer.free();
+            RenderResourceReuse.destroyGeometryBuffer(this.geometryBuffer);
             glFinish();
             if (Capabilities.INSTANCE.canQueryGpuMemory) {
                 long releaseSize = (long) (this.geometryBuffer.size() * 0.75);//if gpu memory usage drops by 75% of the expected value assume we freed it

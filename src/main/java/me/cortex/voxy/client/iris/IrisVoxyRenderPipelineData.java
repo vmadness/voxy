@@ -223,6 +223,7 @@ public class IrisVoxyRenderPipelineData {
                 }
             };//Writes all the uniforms to the locations
         }
+        pos = (pos + 3) & ~3;//std140 blocks are rounded up to a vec4 boundary
         return new StructLayout(pos*4, structLayout, updater);//*4 since each slot is 4 bytes
     }
 
@@ -284,7 +285,7 @@ public class IrisVoxyRenderPipelineData {
     private static int getSizeAndAlignment(UniformType type) {
         return switch (type) {
             case INT, FLOAT -> P(1,1);//Size, Alignment
-            case MAT3 -> P(4+4+3,4);//is funky as each row is a vec3 padded to a vec4
+            case MAT3 -> P(4*3,4);//three vec3 columns, each padded to a vec4 in std140
             case MAT4 -> P(4*4,4);
             case VEC2, VEC2I -> P(2,2);
             case VEC3, VEC3I -> P(3,4);
@@ -293,9 +294,9 @@ public class IrisVoxyRenderPipelineData {
     }
     private static int getUniformOrdering(UniformType type) {
         return switch (type) {
-            case MAT4, VEC4, VEC4I -> 0;
+            case MAT3, MAT4, VEC4, VEC4I -> 0;
             case VEC2, VEC2I -> 1;
-            case VEC3, VEC3I, MAT3 -> 2;
+            case VEC3, VEC3I -> 2;
             case INT, FLOAT -> 3;
         };
     }

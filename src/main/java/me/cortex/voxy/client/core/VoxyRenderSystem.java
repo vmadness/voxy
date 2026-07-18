@@ -62,6 +62,7 @@ import static org.lwjgl.opengl.GL30C.glBindVertexArray;
 import static org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
+import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public class VoxyRenderSystem {
     private final WorldEngine worldIn;
@@ -178,7 +179,7 @@ public class VoxyRenderSystem {
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldBufferBindings[i]);
         }
 
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < TextureUnitRestorePolicy.GL_STATE_MANAGER_UNIT_COUNT; i++) {
             GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
             GlStateManager._bindTexture(0);
             glBindSampler(i, 0);
@@ -367,7 +368,8 @@ public class VoxyRenderSystem {
     }
 
     private record RenderStateSnapshot(int drawFramebuffer, int readFramebuffer, int drawBuffer, int readBuffer,
-                                       int program, int vertexArray, int activeTexture, int[] viewport,
+                                       int program, int vertexArray, int activeTexture,
+                                       int cachedActiveTexture, int[] viewport,
                                        boolean depthTest, int depthFunc, boolean depthMask,
                                        boolean blend, int blendEquationRgb, int blendEquationAlpha,
                                        int blendSrcRgb, int blendDstRgb, int blendSrcAlpha, int blendDstAlpha,
@@ -392,6 +394,7 @@ public class VoxyRenderSystem {
                     glGetInteger(GL_STENCIL_BACK_PASS_DEPTH_PASS)
             };
             int activeTexture = glGetInteger(GL_ACTIVE_TEXTURE);
+            int cachedActiveTexture = GlStateManager._getActiveTexture();
             int[] textures = new int[16];
             int[] samplers = new int[16];
             for (int i = 0; i < textures.length; i++) {
@@ -409,7 +412,8 @@ public class VoxyRenderSystem {
             return new RenderStateSnapshot(
                     glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING), glGetInteger(GL_READ_FRAMEBUFFER_BINDING),
                     glGetInteger(GL_DRAW_BUFFER), glGetInteger(GL_READ_BUFFER),
-                    glGetInteger(GL_CURRENT_PROGRAM), glGetInteger(GL_VERTEX_ARRAY_BINDING), activeTexture, viewport,
+                    glGetInteger(GL_CURRENT_PROGRAM), glGetInteger(GL_VERTEX_ARRAY_BINDING), activeTexture,
+                    cachedActiveTexture, viewport,
                     glIsEnabled(GL_DEPTH_TEST), glGetInteger(GL_DEPTH_FUNC), glGetBoolean(GL_DEPTH_WRITEMASK),
                     glIsEnabled(GL_BLEND), glGetInteger(GL_BLEND_EQUATION_RGB), glGetInteger(GL_BLEND_EQUATION_ALPHA),
                     glGetInteger(GL_BLEND_SRC_RGB), glGetInteger(GL_BLEND_DST_RGB),
@@ -427,15 +431,26 @@ public class VoxyRenderSystem {
             glReadBuffer(this.readBuffer);
             GlStateManager._viewport(this.viewport[0], this.viewport[1], this.viewport[2], this.viewport[3]);
 
-            for (int i = 0; i < this.textures.length; i++) {
+            int managedTextureUnits = TextureUnitRestorePolicy.managedUnitCount(this.textures.length);
+            for (int i = 0; i < managedTextureUnits; i++) {
                 GlStateManager._activeTexture(GL_TEXTURE0 + i);
                 GlStateManager._bindTexture(this.textures[i]);
                 glBindSampler(i, this.samplers[i]);
             }
-            GlStateManager._activeTexture(this.activeTexture);
-            int activeUnit = this.activeTexture - GL_TEXTURE0;
-            if (activeUnit >= 0 && activeUnit < this.textures.length) {
-                GlStateManager._bindTexture(this.textures[activeUnit]);
+            // Minecraft 1.21.1 only caches 12 texture units. Binding units 12-15 through
+            // GlStateManager._bindTexture would index past that cache. DSA restores those
+            // untracked units without changing the active unit or desynchronizing the cache.
+            for (int i = managedTextureUnits; i < this.textures.length; i++) {
+                glBindTextureUnit(i, this.textures[i]);
+                glBindSampler(i, this.samplers[i]);
+            }
+
+            // Restore both views of the active unit. Usually these are equal. If another mod
+            // used raw glActiveTexture before capture, preserving the prior divergence is safer
+            // than making GlStateManager believe an untracked unit is one of its cached units.
+            GlStateManager._activeTexture(this.cachedActiveTexture);
+            if (this.activeTexture != this.cachedActiveTexture) {
+                glActiveTexture(this.activeTexture);
             }
 
             for (int i = 0; i < this.ssbos.length; i++) {
