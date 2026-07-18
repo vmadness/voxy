@@ -10,13 +10,20 @@ import static org.lwjgl.opengl.GL45C.glGetTextureLevelParameteri;
 
 /** Texture attachments of the framebuffer currently receiving Sodium's immediate GL draws. */
 public record BoundFramebufferSnapshot(int framebuffer, int colorTexture, int depthTexture, int viewportWidth,
-                                       int viewportHeight) {
+                                       int viewportHeight, int depthWidth, int depthHeight) {
     private static boolean warnedInvalidTarget;
+    private static int generation;
+    private static int resolvedGeneration = -1;
+    private static int resolvedFramebuffer = -1;
+    private static BoundFramebufferSnapshot resolvedSnapshot;
 
     public static BoundFramebufferSnapshot capture() {
         int framebuffer = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+        if (resolvedSnapshot != null && resolvedFramebuffer == framebuffer && resolvedGeneration == generation) {
+            return resolvedSnapshot;
+        }
         if (framebuffer == 0) {
-            return invalid("the default framebuffer is bound");
+            return resolved(framebuffer, invalid("the default framebuffer is bound"));
         }
 
         int colorAttachment = glGetInteger(GL_DRAW_BUFFER0);
@@ -26,7 +33,7 @@ public record BoundFramebufferSnapshot(int framebuffer, int colorTexture, int de
             depthTexture = textureAttachment(GL_DEPTH_STENCIL_ATTACHMENT);
         }
         if (colorTexture == 0 || depthTexture == 0) {
-            return invalid("the draw framebuffer does not have texture-backed color and depth attachments");
+            return resolved(framebuffer, invalid("the draw framebuffer does not have texture-backed color and depth attachments"));
         }
 
         int width = glGetTextureLevelParameteri(colorTexture, 0, GL_TEXTURE_WIDTH);
@@ -36,9 +43,41 @@ public record BoundFramebufferSnapshot(int framebuffer, int colorTexture, int de
         if (width <= 0 || height <= 0 || width != depthWidth || height != depthHeight
                 || glGetTextureLevelParameteri(colorTexture, 0, GL_TEXTURE_SAMPLES) > 0
                 || glGetTextureLevelParameteri(depthTexture, 0, GL_TEXTURE_SAMPLES) > 0) {
-            return invalid("the draw framebuffer attachments are empty, mismatched, or multisampled");
+            return resolved(framebuffer, invalid("the draw framebuffer attachments are empty, mismatched, or multisampled"));
         }
-        return new BoundFramebufferSnapshot(framebuffer, colorTexture, depthTexture, width, height);
+        return resolved(framebuffer, new BoundFramebufferSnapshot(framebuffer, colorTexture, depthTexture,
+                width, height, depthWidth, depthHeight));
+    }
+
+    public static void invalidate() {
+        generation++;
+        resolvedGeneration = -1;
+        resolvedFramebuffer = -1;
+        resolvedSnapshot = null;
+        warnedInvalidTarget = false;
+    }
+
+    public static long depthSize(int depthTexture) {
+        BoundFramebufferSnapshot snapshot = resolvedDepthTexture(depthTexture);
+        return ((long)snapshot.depthWidth << 32) | (snapshot.depthHeight & 0xffffffffL);
+    }
+
+    public static int drawFramebuffer(int depthTexture) {
+        return resolvedDepthTexture(depthTexture).framebuffer;
+    }
+
+    private static BoundFramebufferSnapshot resolvedDepthTexture(int depthTexture) {
+        BoundFramebufferSnapshot snapshot = resolvedSnapshot;
+        if (snapshot == null || snapshot.depthTexture != depthTexture || !snapshot.hasTextureAttachments()) {
+            throw new IllegalStateException("Depth texture is not from the resolved draw framebuffer");
+        }
+        return snapshot;
+    }
+
+    private static BoundFramebufferSnapshot resolved(int framebuffer, BoundFramebufferSnapshot snapshot) {
+        resolvedFramebuffer = framebuffer;
+        resolvedGeneration = generation;
+        return resolvedSnapshot = snapshot;
     }
 
     private static BoundFramebufferSnapshot invalid(String reason) {
@@ -46,7 +85,7 @@ public record BoundFramebufferSnapshot(int framebuffer, int colorTexture, int de
             warnedInvalidTarget = true;
             Logger.warn("Skipping Voxy rendering because " + reason);
         }
-        return new BoundFramebufferSnapshot(0, 0, 0, 0, 0);
+        return new BoundFramebufferSnapshot(0, 0, 0, 0, 0, 0, 0);
     }
 
     private static int textureAttachment(int attachment) {

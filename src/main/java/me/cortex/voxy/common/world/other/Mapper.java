@@ -5,6 +5,7 @@ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.config.IMappingStorage;
 import me.cortex.voxy.common.util.Pair;
+import me.cortex.voxy.common.util.SingleStateBlockGetter;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.Holder;
 import net.minecraft.core.BlockPos;
@@ -15,13 +16,10 @@ import net.minecraft.nbt.NbtOps;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.util.datafix.fixes.References;
 import net.minecraft.world.level.biome.Biome;
-import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.material.FluidState;
 import org.lwjgl.system.MemoryUtil;
 
 import java.io.ByteArrayInputStream;
@@ -363,32 +361,7 @@ public class Mapper {
             if (state.getBlock() instanceof LeavesBlock) {
                 this.opacity = 15;
             } else {
-                this.opacity = state.getLightBlock(new BlockGetter() {
-                    @Override
-                    public int getHeight() {
-                        return 0;
-                    }
-
-                    @Override
-                    public int getMinBuildHeight() {
-                        return 0;
-                    }
-
-                    @Override
-                    public BlockEntity getBlockEntity(BlockPos pos) {
-                        return null;
-                    }
-
-                    @Override
-                    public BlockState getBlockState(BlockPos pos) {
-                        return state;
-                    }
-
-                    @Override
-                    public FluidState getFluidState(BlockPos pos) {
-                        return state.getFluidState();
-                    }
-                }, BlockPos.ZERO);
+                this.opacity = state.getLightBlock(new SingleStateBlockGetter(state), BlockPos.ZERO);
             }
         }
 

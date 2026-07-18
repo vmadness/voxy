@@ -1,6 +1,7 @@
 package me.cortex.voxy.common.voxelization;
 
 import it.unimi.dsi.fastutil.objects.Reference2IntOpenHashMap;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.other.Mapper;
 import net.caffeinemc.mods.lithium.common.world.chunk.LithiumHashPalette;
 import net.fabricmc.loader.api.FabricLoader;
@@ -40,7 +41,9 @@ public class WorldConversionFactory {
             for (int i = 0; i < vp.getSize(); i++) {
                 BlockState state = null;
                 int blockId = -1;
-                try { state = vp.valueFor(i); } catch (Exception e) {}
+                //Expected cause: palette entry i has no mapped value yet (e.g. a racing chunk unload/palette
+                //resize), which is transient and handled below by treating the state as absent (blockId -1).
+                try { state = vp.valueFor(i); } catch (Exception e) { Logger.warn("Failed to read palette entry", i, e); }
                 if (state != null) {
                     blockId = blockCache.getOrDefault(state, -1);
                     if (blockId == -1) {
@@ -76,7 +79,9 @@ public class WorldConversionFactory {
             for (int i = 0; i < vp.getSize(); i++) {
                 BlockState state = null;
                 int blockId = -1;
-                try { state = vp.valueFor(i); } catch (Exception e) {}
+                //Expected cause: palette entry i has no mapped value yet (e.g. a racing chunk unload/palette
+                //resize), which is transient and handled below by treating the state as absent (blockId -1).
+                try { state = vp.valueFor(i); } catch (Exception e) { Logger.warn("Failed to read palette entry", i, e); }
                 if (state != null) {
                     blockId = blockCache.getOrDefault(state, -1);
                     if (blockId == -1) {

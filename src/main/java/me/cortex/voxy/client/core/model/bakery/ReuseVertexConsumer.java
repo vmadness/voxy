@@ -93,7 +93,8 @@ public final class ReuseVertexConsumer implements VertexConsumer {
 
     public ReuseVertexConsumer quad(BakedQuad quad, int metadata) {
         this.anyShaded |= quad.isShade();
-        this.anyDarkendTex |= false;//TODO: no 1.21.1 equivalent of the 26.x sprite mipmapStrategy DARK_CUTOUT signal
+        //anyDarkendTex is never set here: no 1.21.1 equivalent of the 26.x sprite mipmapStrategy
+        //DARK_CUTOUT signal exists to detect it from (matches reference port; see IMPROVEMENTS.md).
         this.ensureCanPut();
         int[] vertices = quad.getVertices();
         for (int i = 0; i < 4; i++) {

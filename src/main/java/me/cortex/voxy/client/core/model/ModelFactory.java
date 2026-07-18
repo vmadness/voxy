@@ -9,6 +9,7 @@ import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
 import me.cortex.voxy.client.core.model.bakery.SoftwareModelTextureBakery;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
+import me.cortex.voxy.client.core.util.SingleStateBlockAndTintGetter;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.util.Pair;
@@ -21,17 +22,12 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BlockTags;
-import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
-import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.StairBlock;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.lighting.LevelLightEngine;
-import net.minecraft.world.level.material.FluidState;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
@@ -808,52 +804,15 @@ public class ModelFactory {
     // if it is, need to add it to a list and mark it as biome colour dependent or something then the shader
     // will either use the uint as an index or a direct colour multiplier
     private static int captureColourConstant(BlockColor colourProvider, BlockState state, Biome biome) {
-        var getter = new BlockAndTintGetter() {
-
+        var getter = new SingleStateBlockAndTintGetter(state) {
             @Override
             public float getShade(Direction direction, boolean shaded) {
                 return Minecraft.getInstance().level.getShade(direction, shaded);
             }
 
             @Override
-            public int getBrightness(LightLayer type, BlockPos pos) {
-                return 0;
-            }
-
-            @Override
-            public LevelLightEngine getLightEngine() {
-                return null;
-            }
-
-            @Override
             public int getBlockTint(BlockPos pos, ColorResolver colorResolver) {
                 return colorResolver.getColor(biome, 0, 0);
-            }
-
-            @Nullable
-            @Override
-            public BlockEntity getBlockEntity(BlockPos pos) {
-                return null;
-            }
-
-            @Override
-            public BlockState getBlockState(BlockPos pos) {
-                return state;
-            }
-
-            @Override
-            public FluidState getFluidState(BlockPos pos) {
-                return state.getFluidState();
-            }
-
-            @Override
-            public int getHeight() {
-                return 0;
-            }
-
-            @Override
-            public int getMinBuildHeight() {
-                return 0;
             }
         };
         //Multiple layer bs to do with flower beds
@@ -864,52 +823,15 @@ public class ModelFactory {
 
     private static boolean isBiomeDependentColour(BlockColor colourProvider, BlockState state) {
         boolean[] biomeDependent = new boolean[1];
-        var getter = new BlockAndTintGetter() {
-
+        var getter = new SingleStateBlockAndTintGetter(state) {
             @Override
             public float getShade(Direction direction, boolean shaded) {
                 return 0;
             }
 
             @Override
-            public int getBrightness(LightLayer type, BlockPos pos) {
-                return 0;
-            }
-
-            @Override
-            public LevelLightEngine getLightEngine() {
-                return null;
-            }
-
-            @Override
             public int getBlockTint(BlockPos pos, ColorResolver colorResolver) {
                 biomeDependent[0] = true;
-                return 0;
-            }
-
-            @Nullable
-            @Override
-            public BlockEntity getBlockEntity(BlockPos pos) {
-                return null;
-            }
-
-            @Override
-            public BlockState getBlockState(BlockPos pos) {
-                return state;
-            }
-
-            @Override
-            public FluidState getFluidState(BlockPos pos) {
-                return state.getFluidState();
-            }
-
-            @Override
-            public int getHeight() {
-                return 0;
-            }
-
-            @Override
-            public int getMinBuildHeight() {
                 return 0;
             }
         };

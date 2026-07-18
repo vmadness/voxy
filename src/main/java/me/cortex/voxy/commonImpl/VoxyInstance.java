@@ -31,23 +31,6 @@ public abstract class VoxyInstance {
 
     protected final ImportManager importManager;
 
-    public VoxyInstance() {
-        //Default path: shouldCreateInstance() is called virtually with no subclass state assumed
-        //(the base implementation just returns true, and this is only safe for overrides that don't
-        //depend on subclass fields - see the other constructor below for the case that does).
-        if (!this.shouldCreateInstance()) {
-            throw new DontCreateInstance();
-        }
-        Logger.info("Initializing voxy instance");
-        this.threadPool = new UnifiedServiceThreadPool();
-        this.savingService = new SectionSavingService(this.getServiceManager());
-        this.ingestService = new VoxelIngestService(this.getServiceManager());
-        this.importManager = this.createImportManager();
-        this.savingServiceRateLimiter = ()->this.savingService.getTaskCount()<1200;
-        this.worldCleaner = makeWorldCleanerThread();
-        this.worldCleaner.start();
-    }
-
     /**
      * Java 21 requires super() to be the first statement in a subclass constructor (unlike the dev
      * branch's Java 25 flexible constructor bodies, which let a subclass run field-setup - e.g. loading
@@ -57,7 +40,10 @@ public abstract class VoxyInstance {
      * would read uninitialized subclass state. Subclasses in that situation should instead evaluate the
      * condition themselves - using only local variables, as part of their super(...) call's argument
      * list, before any subclass fields are assigned - and pass the result straight into this
-     * constructor.
+     * constructor. There used to be a no-arg constructor that called shouldCreateInstance() virtually
+     * with no subclass state assumed; it was removed because that pattern is exactly the uninitialized-
+     * subclass-state bug this constructor exists to avoid (see shouldCreateInstance()'s javadoc, and
+     * fix commit 07d927bd).
      */
     protected VoxyInstance(boolean shouldCreateInstance) {
         if (!shouldCreateInstance) {
@@ -93,6 +79,14 @@ public abstract class VoxyInstance {
         return thread;
     }
 
+    /**
+     * Determines whether the instance should actually be constructed. Called from the boolean-arg
+     * constructor's caller, before super(...) runs on a subclass - so overrides of this method MUST
+     * NOT read any subclass state (fields aren't initialized yet at that point; see the boolean-arg
+     * constructor's javadoc, and fix commit 07d927bd for the NPE this previously caused). Overrides
+     * that need subclass state should instead compute the condition locally and pass it into the
+     * boolean-arg constructor directly.
+     */
     protected boolean shouldCreateInstance() {
         return true;
     }

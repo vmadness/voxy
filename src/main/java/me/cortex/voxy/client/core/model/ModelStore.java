@@ -27,22 +27,36 @@ public class ModelStore {
     public final int blockSampler = glGenSamplers();
 
     public ModelStore() {
-        this.modelBuffer = new GlBuffer(MODEL_SIZE * (1<<16)).name("ModelData");
-        this.modelColourBuffer = new GlBuffer(4 * (1<<16)).name("ModelColour");
-        this.textures = RenderResourceReuse.getOrCreateModelStoreTextureAtlas();
+        GlBuffer modelBuffer = null;
+        GlBuffer modelColourBuffer = null;
+        GlTexture textures = null;
+        try {
+            modelBuffer = new GlBuffer(MODEL_SIZE * (1<<16)).name("ModelData");
+            modelColourBuffer = new GlBuffer(4 * (1<<16)).name("ModelColour");
+            textures = RenderResourceReuse.getOrCreateModelStoreTextureAtlas();
 
-        //Limit the mips of the texture to match that of the terrain atlas
-        //1.21.1: TextureAtlas's mip field is named "mipLevel" (dev's 26.x "maxMipLevel" doesn't exist);
-        //NOTE: voxy.accesswidener still widens the old "maxMipLevel" name (task 8/access-widener rewrite,
-        //outside this file-ownership pass) and needs updating to "mipLevel" for this to actually resolve.
-        int mipLvl = ((TextureAtlas) Minecraft.getInstance().getTextureManager()
-                .getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")))
-                .mipLevel;
+            //Limit the mips of the texture to match that of the terrain atlas
+            //1.21.1: TextureAtlas's mip field is named "mipLevel" (dev's 26.x "maxMipLevel" doesn't exist);
+            //NOTE: voxy.accesswidener still widens the old "maxMipLevel" name (task 8/access-widener rewrite,
+            //outside this file-ownership pass) and needs updating to "mipLevel" for this to actually resolve.
+            int mipLvl = ((TextureAtlas) Minecraft.getInstance().getTextureManager()
+                    .getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")))
+                    .mipLevel;
 
-        glSamplerParameteri(this.blockSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
-        glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glSamplerParameteri(this.blockSampler, GL_TEXTURE_MIN_LOD, 0);
-        glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAX_LOD, mipLvl);//Integer.numberOfTrailingZeros(ModelFactory.MODEL_TEXTURE_SIZE)
+            glSamplerParameteri(this.blockSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+            glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glSamplerParameteri(this.blockSampler, GL_TEXTURE_MIN_LOD, 0);
+            glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAX_LOD, mipLvl);//Integer.numberOfTrailingZeros(ModelFactory.MODEL_TEXTURE_SIZE)
+        } catch (Throwable t) {
+            if (modelBuffer != null) modelBuffer.free();
+            if (modelColourBuffer != null) modelColourBuffer.free();
+            if (textures != null) RenderResourceReuse.giveBackModelStoreTextureAtlas(textures);
+            glDeleteSamplers(this.blockSampler);
+            throw t;
+        }
+        this.modelBuffer = modelBuffer;
+        this.modelColourBuffer = modelColourBuffer;
+        this.textures = textures;
     }
 
 

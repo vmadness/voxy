@@ -27,7 +27,7 @@
     "minecraft.session.MixinMinecraft",
     "minecraft.util.MixinClientCommonPacketListenerImpl",
     "minecraft.util.MixinGlDebug",
-    "minecraft.util.MixinGPUSelect",
+    "minecraft.util.MixinWindow",
     "sodium.AccessorChunkTracker",
     "sodium.AccessorSodiumWorldRenderer",
     "sodium.MixinChunkJobQueue",

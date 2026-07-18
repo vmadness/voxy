@@ -4,9 +4,11 @@ import com.mojang.blaze3d.platform.GlConst;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferUploader;
+import me.cortex.voxy.client.RenderStatistics;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.core.gl.BoundFramebufferSnapshot;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
@@ -45,24 +47,13 @@ import org.lwjgl.opengl.GL11;
 import java.util.Arrays;
 import java.util.List;
 
-import static org.lwjgl.opengl.ARBDirectStateAccess.glGetTextureLevelParameteri;
 import static org.lwjgl.opengl.GL11.glGetIntegerv;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL33.glBindSampler;
-import static org.lwjgl.opengl.GL13C.glActiveTexture;
-import static org.lwjgl.opengl.GL13C.GL_ACTIVE_TEXTURE;
-import static org.lwjgl.opengl.GL13C.GL_TEXTURE0;
-import static org.lwjgl.opengl.GL14C.GL_BLEND_DST_ALPHA;
-import static org.lwjgl.opengl.GL14C.GL_BLEND_DST_RGB;
-import static org.lwjgl.opengl.GL14C.GL_BLEND_SRC_ALPHA;
-import static org.lwjgl.opengl.GL14C.GL_BLEND_SRC_RGB;
 import static org.lwjgl.opengl.GL20C.*;
-import static org.lwjgl.opengl.GL30C.glBindVertexArray;
-import static org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
-import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 
 public class VoxyRenderSystem {
     private final WorldEngine worldIn;
@@ -85,6 +76,13 @@ public class VoxyRenderSystem {
     private final AbstractRenderPipeline pipeline;
     private final RenderProperties properties;
 
+    private final int[] oldViewport = new int[4];
+    private final int[] ssboBindingPoints;
+    private final int[] oldBufferBindings;
+    private final int touchedTextureUnitCount;
+    private int oldDrawFramebuffer;
+    private int oldReadFramebuffer;
+
     private static AbstractSectionRenderer.Factory<?,? extends IGeometryData> getRenderBackendFactory() {
         //TODO: need todo a thing where selects optimal section render based on if supports the pipeline and geometry data type
         return MDICSectionRenderer.FACTORY;
@@ -96,7 +94,26 @@ public class VoxyRenderSystem {
         world.acquireRef();
         Logger.info("Creating Voxy render system");
 
-        System.gc();
+        if (Boolean.getBoolean("voxy.forceGcOnInit")) {
+            System.gc();
+        }
+
+        BoundFramebufferSnapshot.invalidate();
+
+        int extraSsboBindings = (RenderStatistics.enabled ? 1 : 0)
+                + (PrintfDebugUtil.ENABLE_PRINTF_DEBUGGING ? 1 : 0);
+        this.ssboBindingPoints = new int[10 + extraSsboBindings];
+        this.oldBufferBindings = new int[this.ssboBindingPoints.length];
+        for (int i = 0; i < 10; i++) {
+            this.ssboBindingPoints[i] = i;
+        }
+        int extraSsboIndex = 10;
+        if (RenderStatistics.enabled) {
+            this.ssboBindingPoints[extraSsboIndex++] = 10;
+        }
+        if (PrintfDebugUtil.ENABLE_PRINTF_DEBUGGING) {
+            this.ssboBindingPoints[extraSsboIndex] = 20;
+        }
 
         if (Minecraft.getInstance().options.renderDistance().get()<3) {
             String msg = "Voxy: Having a vanilla render distance of 2 can cause rare culling near the edge of your screen issues, please use 3 or more";
@@ -110,6 +127,8 @@ public class VoxyRenderSystem {
             oldBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
         }
 
+        GlBuffer acquiredGeometryBuffer = null;
+        boolean returnGeometryBufferOnFailure = false;
         try {
             //wait for opengl to be finished, this should hopefully ensure all memory allocations are free
             glFinish();
@@ -123,7 +142,9 @@ public class VoxyRenderSystem {
                 this.modelService = new ModelBakerySubsystem(world.getMapper());
                 this.renderGen = new RenderGenerationService(world, this.modelService, sm, IUsesMeshlets.class.isAssignableFrom(backendFactory.clz()));
 
-                this.geometryData = new BasicSectionGeometryData(1<<20, RenderResourceReuse.getOrCreateGeometryBuffer());
+                acquiredGeometryBuffer = RenderResourceReuse.getOrCreateGeometryBuffer();
+                returnGeometryBufferOnFailure = true;
+                this.geometryData = new BasicSectionGeometryData(1<<20, acquiredGeometryBuffer);
 
                 this.nodeManager = new AsyncNodeManager(1 << 21, this.geometryData, this.renderGen);
                 this.nodeCleaner = new NodeCleaner(this.nodeManager);
@@ -138,6 +159,8 @@ public class VoxyRenderSystem {
             }
 
             this.pipeline = RenderPipelineFactory.createPipeline(this.properties, this.nodeManager, this.nodeCleaner, this.traversal, this::frexStillHasWork);
+            this.touchedTextureUnitCount = this.pipeline instanceof IrisVoxyRenderPipeline
+                    ? TextureUnitRestorePolicy.GL_STATE_MANAGER_UNIT_COUNT : 4;
             this.pipeline.setupExtraModelBakeryData(this.modelService);//Configure the model service
 
             //Late stage traversal compile for shaders with taa
@@ -170,19 +193,27 @@ public class VoxyRenderSystem {
             this.boundOutlineRenderer = new BoundRenderer(this.pipeline);
 
             Logger.info("Voxy render system created with " + this.geometryData.getMaxCapacity() + " geometry capacity, using pipeline '" + this.pipeline.getClass().getSimpleName() + "' with renderer '" + sectionRenderer.getClass().getSimpleName() + "'");
+
+            for (int i = 0; i < oldBufferBindings.length; i++) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldBufferBindings[i]);
+            }
+
+            for (int i = 0; i < TextureUnitRestorePolicy.GL_STATE_MANAGER_UNIT_COUNT; i++) {
+                TextureUnitRestorePolicy.restoreBinding(i, 0);
+                glBindSampler(i, 0);
+            }
+            returnGeometryBufferOnFailure = false;
         } catch (RuntimeException e) {
+            if (returnGeometryBufferOnFailure) {
+                RenderResourceReuse.giveBackGeometryBuffer(acquiredGeometryBuffer);
+            }
             world.releaseRef();//If something goes wrong, we must release the world first
             throw e;
-        }
-
-        for (int i = 0; i < oldBufferBindings.length; i++) {
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldBufferBindings[i]);
-        }
-
-        for (int i = 0; i < TextureUnitRestorePolicy.GL_STATE_MANAGER_UNIT_COUNT; i++) {
-            GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
-            GlStateManager._bindTexture(0);
-            glBindSampler(i, 0);
+        } catch (Error e) {
+            if (returnGeometryBufferOnFailure) {
+                RenderResourceReuse.giveBackGeometryBuffer(acquiredGeometryBuffer);
+            }
+            throw e;
         }
     }
 
@@ -258,7 +289,7 @@ public class VoxyRenderSystem {
             throw new IllegalStateException("Source color and depth textures must be non-zero");
         }
 
-        RenderStateSnapshot renderState = RenderStateSnapshot.capture();
+        this.captureExternalState(sourceDepthTexture);
         try {
         TimingStatistics.resetSamplers();
 
@@ -276,8 +307,9 @@ public class VoxyRenderSystem {
 
         glViewport(0, 0, viewport.width, viewport.height);
 
-        int scrWidth  = glGetTextureLevelParameteri(sourceDepthTexture, 0, GL_TEXTURE_WIDTH);
-        int scrHeight = glGetTextureLevelParameteri(sourceDepthTexture, 0, GL_TEXTURE_HEIGHT);
+        long depthSize = BoundFramebufferSnapshot.depthSize(sourceDepthTexture);
+        int scrWidth = (int)(depthSize >> 32);
+        int scrHeight = (int)depthSize;
 
         this.pipeline.preSetup(viewport);
 
@@ -363,147 +395,73 @@ public class VoxyRenderSystem {
          */
         } finally {
             IrisUtil.clearIrisSamplers();
-            renderState.restore();
+            this.restoreKnownState();
         }
     }
 
-    private record RenderStateSnapshot(int drawFramebuffer, int readFramebuffer, int drawBuffer, int readBuffer,
-                                       int program, int vertexArray, int activeTexture,
-                                       int cachedActiveTexture, int[] viewport,
-                                       boolean depthTest, int depthFunc, boolean depthMask,
-                                       boolean blend, int blendEquationRgb, int blendEquationAlpha,
-                                       int blendSrcRgb, int blendDstRgb, int blendSrcAlpha, int blendDstAlpha,
-                                       boolean cull, boolean scissor, int[] scissorBox,
-                                       boolean polygonOffset, float polygonOffsetFactor, float polygonOffsetUnits,
-                                       boolean stencil, int[] stencilState, int[] colorMask,
-                                       int[] textures, int[] samplers, int[] ssbos) {
-        private static RenderStateSnapshot capture() {
-            int[] viewport = new int[4];
-            glGetIntegerv(GL_VIEWPORT, viewport);
-            int[] scissorBox = new int[4];
-            glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
-            int[] colorMask = new int[4];
-            glGetIntegerv(GL_COLOR_WRITEMASK, colorMask);
-            int[] stencilState = {
-                    glGetInteger(GL_STENCIL_FUNC), glGetInteger(GL_STENCIL_REF), glGetInteger(GL_STENCIL_VALUE_MASK),
-                    glGetInteger(GL_STENCIL_WRITEMASK), glGetInteger(GL_STENCIL_FAIL),
-                    glGetInteger(GL_STENCIL_PASS_DEPTH_FAIL), glGetInteger(GL_STENCIL_PASS_DEPTH_PASS),
-                    glGetInteger(GL_STENCIL_BACK_FUNC), glGetInteger(GL_STENCIL_BACK_REF),
-                    glGetInteger(GL_STENCIL_BACK_VALUE_MASK), glGetInteger(GL_STENCIL_BACK_WRITEMASK),
-                    glGetInteger(GL_STENCIL_BACK_FAIL), glGetInteger(GL_STENCIL_BACK_PASS_DEPTH_FAIL),
-                    glGetInteger(GL_STENCIL_BACK_PASS_DEPTH_PASS)
-            };
-            int activeTexture = glGetInteger(GL_ACTIVE_TEXTURE);
-            int cachedActiveTexture = GlStateManager._getActiveTexture();
-            int[] textures = new int[16];
-            int[] samplers = new int[16];
-            for (int i = 0; i < textures.length; i++) {
-                glActiveTexture(GL_TEXTURE0 + i);
-                textures[i] = glGetInteger(GL_TEXTURE_BINDING_2D);
-                samplers[i] = glGetIntegeri(GL_SAMPLER_BINDING, i);
-            }
-            glActiveTexture(activeTexture);
-
-            int[] ssbos = new int[10];
-            for (int i = 0; i < ssbos.length; i++) {
-                ssbos[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
-            }
-
-            return new RenderStateSnapshot(
-                    glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING), glGetInteger(GL_READ_FRAMEBUFFER_BINDING),
-                    glGetInteger(GL_DRAW_BUFFER), glGetInteger(GL_READ_BUFFER),
-                    glGetInteger(GL_CURRENT_PROGRAM), glGetInteger(GL_VERTEX_ARRAY_BINDING), activeTexture,
-                    cachedActiveTexture, viewport,
-                    glIsEnabled(GL_DEPTH_TEST), glGetInteger(GL_DEPTH_FUNC), glGetBoolean(GL_DEPTH_WRITEMASK),
-                    glIsEnabled(GL_BLEND), glGetInteger(GL_BLEND_EQUATION_RGB), glGetInteger(GL_BLEND_EQUATION_ALPHA),
-                    glGetInteger(GL_BLEND_SRC_RGB), glGetInteger(GL_BLEND_DST_RGB),
-                    glGetInteger(GL_BLEND_SRC_ALPHA), glGetInteger(GL_BLEND_DST_ALPHA),
-                    glIsEnabled(GL_CULL_FACE), glIsEnabled(GL_SCISSOR_TEST), scissorBox,
-                    glIsEnabled(GL_POLYGON_OFFSET_FILL), glGetFloat(GL_POLYGON_OFFSET_FACTOR),
-                    glGetFloat(GL_POLYGON_OFFSET_UNITS), glIsEnabled(GL_STENCIL_TEST), stencilState, colorMask,
-                    textures, samplers, ssbos);
-        }
-
-        private void restore() {
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, this.drawFramebuffer);
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, this.readFramebuffer);
-            glDrawBuffer(this.drawBuffer);
-            glReadBuffer(this.readBuffer);
-            GlStateManager._viewport(this.viewport[0], this.viewport[1], this.viewport[2], this.viewport[3]);
-
-            int managedTextureUnits = TextureUnitRestorePolicy.managedUnitCount(this.textures.length);
-            for (int i = 0; i < managedTextureUnits; i++) {
-                GlStateManager._activeTexture(GL_TEXTURE0 + i);
-                GlStateManager._bindTexture(this.textures[i]);
-                glBindSampler(i, this.samplers[i]);
-            }
-            // Minecraft 1.21.1 only caches 12 texture units. Binding units 12-15 through
-            // GlStateManager._bindTexture would index past that cache. DSA restores those
-            // untracked units without changing the active unit or desynchronizing the cache.
-            for (int i = managedTextureUnits; i < this.textures.length; i++) {
-                glBindTextureUnit(i, this.textures[i]);
-                glBindSampler(i, this.samplers[i]);
-            }
-
-            // Restore both views of the active unit. Usually these are equal. If another mod
-            // used raw glActiveTexture before capture, preserving the prior divergence is safer
-            // than making GlStateManager believe an untracked unit is one of its cached units.
-            GlStateManager._activeTexture(this.cachedActiveTexture);
-            if (this.activeTexture != this.cachedActiveTexture) {
-                glActiveTexture(this.activeTexture);
-            }
-
-            for (int i = 0; i < this.ssbos.length; i++) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, this.ssbos[i]);
-            }
-
-            GlStateManager._glUseProgram(this.program);
-            GlStateManager._glBindVertexArray(this.vertexArray);
-            setDepthTest(this.depthTest);
-            GlStateManager._depthFunc(this.depthFunc);
-            GlStateManager._depthMask(this.depthMask);
-            setBlend(this.blend);
-            GlStateManager._blendEquation(this.blendEquationRgb);
-            glBlendEquationSeparate(this.blendEquationRgb, this.blendEquationAlpha);
-            GlStateManager._blendFuncSeparate(this.blendSrcRgb, this.blendDstRgb, this.blendSrcAlpha, this.blendDstAlpha);
-            setCull(this.cull);
-            setScissor(this.scissor);
-            GlStateManager._scissorBox(this.scissorBox[0], this.scissorBox[1], this.scissorBox[2], this.scissorBox[3]);
-            setPolygonOffset(this.polygonOffset);
-            GlStateManager._polygonOffset(this.polygonOffsetFactor, this.polygonOffsetUnits);
-            GlStateManager._colorMask(this.colorMask[0] != 0, this.colorMask[1] != 0,
-                    this.colorMask[2] != 0, this.colorMask[3] != 0);
-            GlStateManager._stencilFunc(this.stencilState[0], this.stencilState[1], this.stencilState[2]);
-            GlStateManager._stencilMask(this.stencilState[3]);
-            GlStateManager._stencilOp(this.stencilState[4], this.stencilState[5], this.stencilState[6]);
-            glStencilFuncSeparate(GL_BACK, this.stencilState[7], this.stencilState[8], this.stencilState[9]);
-            glStencilMaskSeparate(GL_BACK, this.stencilState[10]);
-            glStencilOpSeparate(GL_BACK, this.stencilState[11], this.stencilState[12], this.stencilState[13]);
-            if (this.stencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
-            BufferUploader.reset();
-        }
-
-        private static void setDepthTest(boolean enabled) {
-            if (enabled) GlStateManager._enableDepthTest(); else GlStateManager._disableDepthTest();
-        }
-
-        private static void setBlend(boolean enabled) {
-            if (enabled) GlStateManager._enableBlend(); else GlStateManager._disableBlend();
-        }
-
-        private static void setCull(boolean enabled) {
-            if (enabled) GlStateManager._enableCull(); else GlStateManager._disableCull();
-        }
-
-        private static void setScissor(boolean enabled) {
-            if (enabled) GlStateManager._enableScissorTest(); else GlStateManager._disableScissorTest();
-        }
-
-        private static void setPolygonOffset(boolean enabled) {
-            if (enabled) GlStateManager._enablePolygonOffset(); else GlStateManager._disablePolygonOffset();
+    private void captureExternalState(int sourceDepthTexture) {
+        this.oldDrawFramebuffer = BoundFramebufferSnapshot.drawFramebuffer(sourceDepthTexture);
+        this.oldReadFramebuffer = glGetInteger(GL_READ_FRAMEBUFFER_BINDING);
+        glGetIntegerv(GL_VIEWPORT, this.oldViewport);
+        for (int i = 0; i < this.oldBufferBindings.length; i++) {
+            this.oldBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, this.ssboBindingPoints[i]);
         }
     }
 
+    private void restoreKnownState() {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, this.oldDrawFramebuffer);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, this.oldReadFramebuffer);
+        GlStateManager._viewport(this.oldViewport[0], this.oldViewport[1], this.oldViewport[2], this.oldViewport[3]);
+
+        for (int i = 0; i < this.oldBufferBindings.length; i++) {
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, this.ssboBindingPoints[i], this.oldBufferBindings[i]);
+        }
+
+        GlStateManager._glUseProgram(0);
+        GlStateManager._glBindVertexArray(0);
+
+        GlStateManager._enableDepthTest();
+        glEnable(GL_DEPTH_TEST);
+        GlStateManager._depthFunc(GL_LESS);
+        glDepthFunc(GL_LESS);
+        GlStateManager._depthMask(true);
+        glDepthMask(true);
+
+        GlStateManager._blendEquation(GL_FUNC_ADD);
+        GlStateManager._blendFuncSeparate(0, 0, 0, 0);
+        glBlendFuncSeparate(0, 0, 0, 0);
+        GlStateManager._disableBlend();
+        glDisable(GL_BLEND);
+
+        GlStateManager._enableCull();
+        glEnable(GL_CULL_FACE);
+        GlStateManager._disablePolygonOffset();
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        GlStateManager._polygonOffset(0, 0);
+        glPolygonOffset(0, 0);
+        GlStateManager._disableScissorTest();
+        glDisable(GL_SCISSOR_TEST);
+
+        GlStateManager._colorMask(true, true, true, true);
+        glColorMask(true, true, true, true);
+        GlStateManager._stencilFunc(GL_ALWAYS, 0, -1);
+        glStencilFunc(GL_ALWAYS, 0, -1);
+        GlStateManager._stencilMask(-1);
+        glStencilMask(-1);
+        GlStateManager._stencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glDisable(GL_STENCIL_TEST);
+
+        for (int i = 0; i < this.touchedTextureUnitCount; i++) {
+            TextureUnitRestorePolicy.restoreBinding(i, 0);
+            if (!IrisUtil.IRIS_INSTALLED) {
+                glBindSampler(i, 0);
+            }
+        }
+        GlStateManager._activeTexture(GlConst.GL_TEXTURE0 + TextureUnitRestorePolicy.GL_STATE_MANAGER_UNIT_COUNT - 1);
+
+        BufferUploader.reset();
+    }
 
 
     private void autoBalanceSubDivSize() {
@@ -635,6 +593,7 @@ public class VoxyRenderSystem {
     }
 
     public void shutdown() {
+        BoundFramebufferSnapshot.invalidate();
         Logger.info("Flushing download stream");
         DownloadStream.INSTANCE.flushWaitClear();
         Logger.info("Shutting down rendering");

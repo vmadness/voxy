@@ -4,6 +4,7 @@ import me.cortex.voxy.client.VoxyClientInstance;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
+import me.cortex.voxy.client.core.gl.BoundFramebufferSnapshot;
 import me.cortex.voxy.client.core.util.IrisUtil;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.WorldEngine;
@@ -43,6 +44,21 @@ public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
         this.voxy$setWorld(level);
     }
 
+    //A window resize can recreate the draw framebuffer's attachments under the SAME framebuffer id,
+    //which would otherwise leave BoundFramebufferSnapshot's id-keyed cache pointing at stale
+    //(destroyed) attachment textures until something else happened to invalidate it.
+    @Inject(method = "resize(II)V", at = @At("HEAD"))
+    private void voxy$invalidateFramebufferSnapshotOnResize(int width, int height, CallbackInfo ci) {
+        BoundFramebufferSnapshot.invalidate();
+    }
+
+    //Hardening note (IMPROVEMENTS.md 3.4): a plain @At("RETURN") injection fires on every return site
+    //of allChanged(), not just the last one. Both of vanilla's current return sites in allChanged()
+    //are guarded correctly (this handler is idempotent/cheap to re-run), so this is safe today - but
+    //if a future MC version or another mod adds an early return to allChanged(), this injection would
+    //silently fire multiple times per call, multiplying reload triggers. If that ever needs pinning
+    //down, prefer an explicit ordinal (@At(value = "RETURN", ordinal = ...)) or move to a TAIL-style
+    //single-exit target instead of loosening this comment.
     @Inject(method = "allChanged()V", at = @At("RETURN"), order = 900)
     private void voxy$reloadRenderer(CallbackInfo ci) {
         this.voxy$shutdownRenderer();

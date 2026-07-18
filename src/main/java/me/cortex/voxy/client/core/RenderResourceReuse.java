@@ -46,6 +46,13 @@ public class RenderResourceReuse {
         return atlas;
     }
     public static void giveBackModelStoreTextureAtlas(GlTexture texture) {
+        //Only one renderer instance exists at a time, so at most one entry should ever be cached.
+        //A second give-back indicates a leak/duplicate-creation bug upstream; don't let the cache grow silently.
+        if (!MODEL_TEXTURE_CACHE.isEmpty()) {
+            Logger.error("RenderResourceReuse: model texture atlas cache already holds an entry, destroying surplus atlas instead of caching it");
+            texture.free();
+            return;
+        }
         MODEL_TEXTURE_CACHE.add(texture);
     }
 
@@ -97,6 +104,14 @@ public class RenderResourceReuse {
     }
 
     public static void giveBackGeometryBuffer(GlBuffer geometryBuffer) {
+        //Only one renderer instance exists at a time, so at most one entry should ever be cached.
+        //A second give-back indicates a leak/duplicate-creation bug upstream; don't let the cache grow silently
+        //(entries here are 512MB-2GB each).
+        if (!GEOMETRY_BUFFER_CACHE.isEmpty()) {
+            Logger.error("RenderResourceReuse: geometry buffer cache already holds an entry, destroying surplus buffer instead of caching it");
+            destroyGeometryBuffer(geometryBuffer);
+            return;
+        }
         GEOMETRY_BUFFER_CACHE.add(geometryBuffer);
     }
 

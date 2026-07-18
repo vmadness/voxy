@@ -2,6 +2,7 @@ package me.cortex.voxy.client.core.model.bakery;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import me.cortex.voxy.client.core.model.ModelFactory;
+import me.cortex.voxy.client.core.util.SingleStateBlockAndTintGetter;
 import me.cortex.voxy.common.util.UnsafeUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
@@ -12,17 +13,13 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
-import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.RenderShape;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
-import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.material.FluidState;
-import org.jetbrains.annotations.Nullable;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -93,17 +90,7 @@ public class SoftwareModelTextureBakery {
 
 
     private void bakeFluidState(BlockState state, int face, RenderType layer) {
-        BlockAndTintGetter getter = new BlockAndTintGetter() {
-            @Override
-            public LevelLightEngine getLightEngine() {
-                return null;
-            }
-
-            @Override
-            public int getBrightness(LightLayer type, BlockPos pos) {
-                return 0;
-            }
-
+        BlockAndTintGetter getter = new SingleStateBlockAndTintGetter(state) {
             @Override
             public float getShade(Direction direction, boolean shade) {
                 return 1.0f;
@@ -119,27 +106,20 @@ public class SoftwareModelTextureBakery {
                 return -1;
             }
 
-            @Nullable
-            @Override
-            public BlockEntity getBlockEntity(BlockPos pos) {
-                return null;
-            }
+            //Fixme:
+            // This makes it so that the top face of water is always air, if this is commented out
+            //  the up block will be a liquid state which makes the sides full
+            // if this is uncommented, that issue is fixed but e.g. stacking water layers ontop of eachother
+            //  doesnt fill the side of the block
 
+            //if (pos.getY() == 1) {
+            //    return Blocks.AIR.getDefaultState();
+            //}
             @Override
             public BlockState getBlockState(BlockPos pos) {
                 if (shouldReturnAirForFluid(pos, face)) {
                     return Blocks.AIR.defaultBlockState();
                 }
-
-                //Fixme:
-                // This makes it so that the top face of water is always air, if this is commented out
-                //  the up block will be a liquid state which makes the sides full
-                // if this is uncommented, that issue is fixed but e.g. stacking water layers ontop of eachother
-                //  doesnt fill the side of the block
-
-                //if (pos.getY() == 1) {
-                //    return Blocks.AIR.getDefaultState();
-                //}
                 return state;
             }
 
@@ -150,16 +130,6 @@ public class SoftwareModelTextureBakery {
                 }
 
                 return state.getFluidState();
-            }
-
-            @Override
-            public int getHeight() {
-                return 0;
-            }
-
-            @Override
-            public int getMinBuildHeight() {
-                return 0;
             }
         };
 

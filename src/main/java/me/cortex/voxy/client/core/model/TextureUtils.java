@@ -281,6 +281,13 @@ public class TextureUtils {
         );
     }
 
+    // --- single-channel sRGB <-> linear conversions ---
+    // Keep these two next to each other: they must stay in sync as a pair, and both must stay in
+    // sync with sodium's net.caffeinemc.mods.sodium.client.util.color.ColorSRGB, which is the
+    // canonical curve the rest of this file (and the rest of voxy's texture pipeline) uses. Don't
+    // try to call sodium's private single-channel method directly - it isn't exposed - which is why
+    // linearToSrgbChannel below is a hand-rolled (but curve-matching) gamma encode instead.
+
     //1.21.1 port: net.minecraft.util.ARGB (with #linearToSrgbChannel) doesn't exist pre-26.x;
     //sodium's ColorSRGB doesn't expose a single-channel linear->sRGB conversion either, so this is
     //a standard sRGB gamma-encode of a single (already-normalized) linear channel value.
@@ -288,6 +295,13 @@ public class TextureUtils {
         linear = Math.max(0f, Math.min(1f, linear));
         float srgb = linear <= 0.0031308f ? linear * 12.92f : 1.055f * (float) Math.pow(linear, 1.0 / 2.4) - 0.055f;
         return Math.round(srgb * 255f);
+    }
+
+    //Single-channel inverse of the above, delegating straight to sodium's ColorSRGB (the canonical
+    //implementation) so callers that need both directions have one obvious pair to use instead of
+    //some call sites using ColorSRGB directly and others using a local reimplementation.
+    private static float srgbToLinearChannel(int srgb) {
+        return ColorSRGB.srgbToLinear(srgb);
     }
 
 }
