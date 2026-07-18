@@ -798,7 +798,7 @@ public class ModelFactory {
             } catch (Exception e) {
                 return null;
             }
-            if (color == 0 || color == -1) return null;
+            if (color == -1) return null;
             //TODO: check if all the elements inside the tint are null, if so return null
             return (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
         }

@@ -60,7 +60,6 @@ import static org.lwjgl.opengl.GL14C.GL_BLEND_SRC_RGB;
 import static org.lwjgl.opengl.GL20C.*;
 import static org.lwjgl.opengl.GL30C.glBindVertexArray;
 import static org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING;
-import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
 
@@ -362,6 +361,7 @@ public class VoxyRenderSystem {
         TimingStatistics.F.stop();
          */
         } finally {
+            IrisUtil.clearIrisSamplers();
             renderState.restore();
         }
     }
@@ -428,7 +428,8 @@ public class VoxyRenderSystem {
             GlStateManager._viewport(this.viewport[0], this.viewport[1], this.viewport[2], this.viewport[3]);
 
             for (int i = 0; i < this.textures.length; i++) {
-                glBindTextureUnit(i, this.textures[i]);
+                GlStateManager._activeTexture(GL_TEXTURE0 + i);
+                GlStateManager._bindTexture(this.textures[i]);
                 glBindSampler(i, this.samplers[i]);
             }
             GlStateManager._activeTexture(this.activeTexture);
