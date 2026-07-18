@@ -7,7 +7,8 @@ import me.cortex.voxy.commonImpl.WorldIdentifier;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.ClientPacketListener;
-import net.minecraft.client.renderer.extract.LevelExtractor;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.SectionPos;
@@ -23,6 +24,8 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+import java.util.function.Supplier;
 
 @Mixin(ClientLevel.class)
 public abstract class MixinClientLevel {
@@ -40,12 +43,12 @@ public abstract class MixinClientLevel {
             final Holder<DimensionType> dimensionType,
             final int serverChunkRadius,
             final int serverSimulationDistance,
-            final LevelExtractor levelExtractor,
+            final Supplier<ProfilerFiller> profiler,
+            final LevelRenderer levelRenderer,
             final boolean isDebug,
             final long biomeZoomSeed,
-            final int seaLevel,
             CallbackInfo cir) {
-        this.bottomSectionY = ((Level)(Object)this).getMinY()>>4;
+        this.bottomSectionY = ((Level)(Object)this).getMinBuildHeight()>>4;
     }
 
     @Inject(method = "setBlocksDirty", at = @At("TAIL"))

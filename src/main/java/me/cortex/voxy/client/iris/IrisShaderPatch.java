@@ -308,7 +308,9 @@ public class IrisShaderPatch {
 
     private static final Gson GSON = new GsonBuilder()
             .excludeFieldsWithModifiers(Modifier.PRIVATE)
-            .setStrictness(Strictness.LENIENT)
+            //1.21.1 ships Gson 2.10.1 (com.google.gson.Strictness was added in 2.11); use the older
+            //equivalent lenient-parsing toggle instead.
+            .setLenient()
             .create();
 
     public static IrisShaderPatch makePatch(ShaderPack ipack, AbsolutePackPath directory, Function<AbsolutePackPath, String> sourceProvider) {

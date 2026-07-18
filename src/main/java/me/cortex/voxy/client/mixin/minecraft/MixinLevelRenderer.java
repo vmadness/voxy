@@ -10,9 +10,11 @@ import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
 import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -22,6 +24,7 @@ import java.util.Objects;
 
 @Mixin(LevelRenderer.class)
 public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
+    @Shadow private @Nullable ClientLevel level;
     @Unique @Nullable private WorldIdentifier identifier;
     @Unique private @Nullable VoxyRenderSystem renderer;
 
@@ -33,6 +36,19 @@ public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
     @Inject(method = "close", at = @At("HEAD"))
     private void voxy$injectClose(CallbackInfo ci) {
         this.voxy$shutdownRenderer();
+    }
+
+    @Inject(method = "setLevel", at = @At("HEAD"))
+    private void voxy$captureSetWorld(ClientLevel level, CallbackInfo ci) {
+        this.voxy$setWorld(level);
+    }
+
+    @Inject(method = "allChanged()V", at = @At("RETURN"), order = 900)
+    private void voxy$reloadRenderer(CallbackInfo ci) {
+        this.voxy$shutdownRenderer();
+        if (this.level != null) {
+            this.voxy$createRenderer();
+        }
     }
 
     @Override

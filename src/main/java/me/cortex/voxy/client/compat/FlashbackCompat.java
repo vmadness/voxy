@@ -1,15 +1,12 @@
 package me.cortex.voxy.client.compat;
 
-import com.moulberry.flashback.Flashback;
-import com.moulberry.flashback.playback.ReplayServer;
-import com.moulberry.flashback.record.FlashbackMeta;
-import me.cortex.voxy.common.Logger;
-import net.fabricmc.loader.api.FabricLoader;
-
 import java.nio.file.Path;
 
 public class FlashbackCompat {
-    public static final boolean FLASHBACK_INSTALLED = FabricLoader.getInstance().isModLoaded("flashback");
+    // 1.21.1 port: flashback compat is disabled (no compileOnly dep on this classpath, same as
+    // nvidium/vivecraft/chunky, see build.gradle/PORT_1211.md T13), so this is hardcoded false
+    // and getReplayStoragePath0()'s use of the flashback API is stubbed out below.
+    public static final boolean FLASHBACK_INSTALLED = false;
 
     public static Path getReplayStoragePath() {
         if (!FLASHBACK_INSTALLED) {
@@ -19,22 +16,8 @@ public class FlashbackCompat {
     }
 
     private static Path getReplayStoragePath0() {
-        ReplayServer replayServer = Flashback.getReplayServer();
-        if (replayServer != null) {
-            FlashbackMeta meta = replayServer.getMetadata();
-            if (meta != null) {
-                var path = ((IFlashbackMeta)meta).getVoxyPath();
-                if (path != null) {
-                    Logger.info("Flashback replay server exists and meta exists");
-                    if (path.exists()) {
-                        Logger.info("Flashback voxy path exists in filesystem, using this as lod data source");
-                        return path.toPath();
-                    } else {
-                        Logger.warn("Flashback meta had voxy path saved but path doesnt exist");
-                    }
-                }
-            }
-        }
+        //Flashback compat disabled for this port (FLASHBACK_INSTALLED is always false above), so
+        //this path is unreachable; stubbed to null rather than referencing the flashback API.
         return null;
     }
 }

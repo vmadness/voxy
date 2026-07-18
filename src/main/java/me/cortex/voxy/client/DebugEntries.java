@@ -1,62 +1,59 @@
 package me.cortex.voxy.client;
 
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
+import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.client.core.util.GPUTiming;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.minecraft.ChatFormatting;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.components.debug.DebugScreenDisplayer;
-import net.minecraft.client.gui.components.debug.DebugScreenEntries;
-import net.minecraft.client.gui.components.debug.DebugScreenEntry;
-import net.minecraft.client.gui.components.debug.DebugScreenEntryStatus;
-import net.minecraft.resources.Identifier;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.chunk.LevelChunk;
-import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
+/**
+ * 1.21.1 has no DebugScreenEntry/DebugScreenEntries registry (that is a 26.x-only API), so instead of
+ * registering entries we just append voxy's F3 lines directly from a mixin on DebugScreenOverlay
+ * (see MixinDebugScreenOverlay). This mirrors the mechanism used by the mc_1211 reference port's
+ * MixinDebugScreenOverlay, while keeping dev's line content.
+ */
 public class DebugEntries {
-    public static final Identifier GPU_DEBUG = Identifier.fromNamespaceAndPath("voxy", "gpu_debug");
     public static void init() {
-        DebugScreenEntries.register(Identifier.fromNamespaceAndPath("voxy", "version"), new DebugScreenEntry() {
-            @Override
-            public void display(DebugScreenDisplayer lines, @Nullable Level level, @Nullable LevelChunk levelChunk, @Nullable LevelChunk levelChunk2) {
-                if (!VoxyCommon.isAvailable()) {
-                    lines.addLine(ChatFormatting.RED + "voxy-"+VoxyCommon.MOD_VERSION);//Voxy installed, not avalible
-                    return;
-                }
-                var instance = VoxyCommon.getInstance();
-                if (instance == null) {
-                    lines.addLine(ChatFormatting.YELLOW + "voxy-" + VoxyCommon.MOD_VERSION);//Voxy avalible, no instance active
-                    return;
-                }
-                //Voxy instance active
-                lines.addLine((IVoxyRenderSystemHolder.getNullable()==null?ChatFormatting.DARK_GREEN:ChatFormatting.GREEN)+"voxy-"+VoxyCommon.MOD_VERSION);
-            }
-        });
+        //Nothing to register on 1.21.1; kept as a no-op so callers don't need to change.
+    }
 
-        DebugScreenEntries.register(Identifier.fromNamespaceAndPath("voxy","debug"), new VoxyDebugScreenEntry());
+    public static void addLines(List<String> lines) {
+        if (!VoxyCommon.isAvailable()) {
+            lines.add(ChatFormatting.RED + "voxy-" + VoxyCommon.MOD_VERSION);//Voxy installed, not avalible
+            return;
+        }
+        var instance = VoxyCommon.getInstance();
+        if (instance == null) {
+            lines.add(ChatFormatting.YELLOW + "voxy-" + VoxyCommon.MOD_VERSION);//Voxy avalible, no instance active
+            return;
+        }
 
-        DebugScreenEntries.register(GPU_DEBUG, new DebugScreenEntry() {
-            @Override
-            public void display(DebugScreenDisplayer debugScreenDisplayer, @Nullable Level level, @Nullable LevelChunk levelChunk, @Nullable LevelChunk levelChunk2) {
+        VoxyRenderSystem vrs = IVoxyRenderSystemHolder.getNullable();
 
-            }
-        });
+        //Voxy instance active
+        lines.add((vrs == null ? ChatFormatting.DARK_GREEN : ChatFormatting.GREEN) + "voxy-" + VoxyCommon.MOD_VERSION);
+
+        List<String> instanceLines = new ArrayList<>();
+        instance.addDebug(instanceLines);
+        lines.addAll(instanceLines);
+
+        if (vrs != null) {
+            List<String> renderLines = new ArrayList<>();
+            vrs.addDebugInfo(renderLines);
+            lines.addAll(renderLines);
+        }
     }
 
     private static boolean previousGpuDebugEnabled = false;
-    public static void onRebuild(Map<Identifier, DebugScreenEntryStatus> allStatuses, List<Identifier> enabled) {
-        var entry = allStatuses.getOrDefault(GPU_DEBUG, DebugScreenEntryStatus.NEVER);
-        if ((entry!=DebugScreenEntryStatus.NEVER)!=previousGpuDebugEnabled) {
-            previousGpuDebugEnabled ^= true;
+    public static void onDebugScreenStateChanged(boolean debugScreenOpen) {
+        if (debugScreenOpen != previousGpuDebugEnabled) {
+            previousGpuDebugEnabled = debugScreenOpen;
 
             GPUTiming.INSTANCE.setEnabled(previousGpuDebugEnabled);
             RenderStatistics.enabled = previousGpuDebugEnabled;
-            var renderer = Minecraft.getInstance().levelExtractor;
-            if (renderer!=null)renderer.allChanged();
         }
     }
 }

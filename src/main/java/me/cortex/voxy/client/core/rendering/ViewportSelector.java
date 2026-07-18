@@ -1,17 +1,16 @@
 package me.cortex.voxy.client.core.rendering;
 
 import me.cortex.voxy.client.core.util.IrisUtil;
-import net.fabricmc.loader.api.FabricLoader;
-import org.vivecraft.api.client.VRRenderingAPI;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 
-import static org.vivecraft.api.client.data.RenderPass.VANILLA;
-
 public class ViewportSelector <T extends Viewport<?>> {
-    public static final boolean VIVECRAFT_INSTALLED = FabricLoader.getInstance().isModLoaded("vivecraft");
+    // 1.21.1 port: vivecraft compat is disabled (no compileOnly dep on this classpath, same as
+    // flashback/nvidium/chunky, see build.gradle/PORT_1211.md T13), so this is hardcoded false
+    // instead of checking FabricLoader; getVivecraftViewport() below is stubbed accordingly.
+    public static final boolean VIVECRAFT_INSTALLED = false;
 
     private final Supplier<T> creator;
     private final T defaultViewport;
@@ -27,11 +26,9 @@ public class ViewportSelector <T extends Viewport<?>> {
     }
 
     private T getVivecraftViewport() {
-        var pass = VRRenderingAPI.instance().getCurrentRenderPass();
-        if (pass == null || pass == VANILLA) {
-            return null;
-        }
-        return this.getOrCreate(pass);
+        //Vivecraft compat disabled for this port (VIVECRAFT_INSTALLED is always false above), so
+        //this path is unreachable; stubbed to null rather than referencing the vivecraft API.
+        return null;
     }
 
     private static final Object IRIS_SHADOW_OBJECT = new Object();

@@ -24,6 +24,10 @@ public class VoxyClientInstance extends VoxyInstance {
     private final boolean noIngestOverride;
 
     public VoxyClientInstance() {
+        //1.21.1/Java 21 port: flexible constructor bodies (statements before super()) are a Java 25
+        //language feature and aren't available on Java 21, so super() has to be first; field setup
+        //that used to run before it is unaffected since super() here takes no arguments.
+        super();
         {
             var path = FlashbackCompat.getReplayStoragePath();
             this.noIngestOverride = path != null;
@@ -33,7 +37,6 @@ public class VoxyClientInstance extends VoxyInstance {
             var basePath = this.basePath = path.normalize();
             this.config = StorageConfigUtil.getCreateStorageConfig(Config.class, c->c.version==1&&c.sectionStorageConfig!=null, ()->DEFAULT_STORAGE_CONFIG, basePath);
         }
-        super();
         this.updateDedicatedThreads();
     }
 

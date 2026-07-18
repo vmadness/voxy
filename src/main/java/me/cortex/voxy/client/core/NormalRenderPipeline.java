@@ -76,18 +76,19 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     @Override
     protected void finish(Viewport<?> viewport, int sourceDepthTexture, int outputFramebuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
-        boolean fogCoversAllRendering = viewport.fogParameters.environmentalEnd()<VoxyRenderSystem.getRenderDistance();
+        float start = viewport.fogSnapshot.environmentalStart();
+        float end = viewport.fogSnapshot.environmentalEnd();
+        boolean validFog = Float.isFinite(start) && Float.isFinite(end) && end > start;
+        boolean fogCoversAllRendering = validFog && end < VoxyRenderSystem.getRenderDistance();
 
         if (this.useEnvFog) {
-            float start = viewport.fogParameters.environmentalStart();
-            float end = viewport.fogParameters.environmentalEnd();
-            if (Math.abs(end-start)>1) {
+            if (validFog && Math.abs(end-start)>1) {
                 float invEndFogDelta = 1f / (end - start);
                 float endDistance = Math.max(VoxyRenderSystem.getRenderDistance(), 20*16);//TODO: make this constant a config option
                 endDistance *= (float)Math.sqrt(3);
                 float startDelta = -start * invEndFogDelta;
                 glUniform4f(4, invEndFogDelta, startDelta, Math.clamp(endDistance*invEndFogDelta+startDelta, 0, 1),0);//
-                glUniform4f(5, viewport.fogParameters.red(), viewport.fogParameters.green(), viewport.fogParameters.blue(), viewport.fogParameters.alpha());
+                glUniform4f(5, viewport.fogSnapshot.red(), viewport.fogSnapshot.green(), viewport.fogSnapshot.blue(), viewport.fogSnapshot.alpha());
             } else {
                 glUniform4f(4, 0, 0, 0, 0);
                 glUniform4f(5, 0, 0, 0, 0);

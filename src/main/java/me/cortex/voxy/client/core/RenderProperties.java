@@ -1,14 +1,13 @@
 package me.cortex.voxy.client.core;
 
-import com.mojang.blaze3d.pipeline.DepthStencilState;
-import com.mojang.blaze3d.platform.CompareOp;
-import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.core.gl.shader.Shader;
 import me.cortex.voxy.client.core.util.IrisUtil;
 import me.cortex.voxy.client.iris.IGetIrisVoxyPipelineData;
 import net.irisshaders.iris.Iris;
 
 import static org.lwjgl.opengl.GL11C.*;
+import static org.lwjgl.opengl.GL45C.GL_CLIP_DEPTH_MODE;
+import static org.lwjgl.opengl.GL45C.GL_ZERO_TO_ONE;
 
 public record RenderProperties(boolean isZero2One, boolean isReverseZ, boolean useBlockAtlasUVs) {
 
@@ -60,12 +59,13 @@ public record RenderProperties(boolean isZero2One, boolean isReverseZ, boolean u
     }
 
     private static boolean useReverseZ() {
-        return IrisUtil.irisShaderPackEnabled()?false:DepthStencilState.DEFAULT.depthTest().equals(CompareOp.GREATER_THAN_OR_EQUAL);
+        int depthFunc = glGetInteger(GL_DEPTH_FUNC);
+        return !IrisUtil.irisShaderPackEnabled() && (depthFunc == GL_GREATER || depthFunc == GL_GEQUAL);
     }
 
     public static RenderProperties getRenderProperties() {
         RenderProperties properties = new RenderProperties(
-                RenderSystem.getDevice().getDeviceInfo().isZZeroToOne(),
+                glGetInteger(GL_CLIP_DEPTH_MODE) == GL_ZERO_TO_ONE,
                 useReverseZ(),
                 false);
 

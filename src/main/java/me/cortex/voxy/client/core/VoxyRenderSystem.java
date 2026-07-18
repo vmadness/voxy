@@ -1,7 +1,9 @@
 package me.cortex.voxy.client.core;
 
-import com.mojang.blaze3d.opengl.GlConst;
-import com.mojang.blaze3d.opengl.GlStateManager;
+import com.mojang.blaze3d.platform.GlConst;
+import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.BufferUploader;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.config.VoxyConfig;
@@ -11,6 +13,7 @@ import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.rendering.RenderDistanceTracker;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.ViewportSelector;
+import me.cortex.voxy.client.core.rendering.VoxyFogSnapshot;
 import me.cortex.voxy.client.core.rendering.bounding.BoundRenderer;
 import me.cortex.voxy.client.core.rendering.bounding.ColumnStreamedBoundStore;
 import me.cortex.voxy.client.core.rendering.bounding.StreamedBoundStore;
@@ -32,7 +35,6 @@ import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.VoxyCommon;
-import net.caffeinemc.mods.sodium.client.util.FogParameters;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import org.jetbrains.annotations.Nullable;
@@ -48,6 +50,17 @@ import static org.lwjgl.opengl.GL11.glGetIntegerv;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL33.glBindSampler;
+import static org.lwjgl.opengl.GL13C.glActiveTexture;
+import static org.lwjgl.opengl.GL13C.GL_ACTIVE_TEXTURE;
+import static org.lwjgl.opengl.GL13C.GL_TEXTURE0;
+import static org.lwjgl.opengl.GL14C.GL_BLEND_DST_ALPHA;
+import static org.lwjgl.opengl.GL14C.GL_BLEND_DST_RGB;
+import static org.lwjgl.opengl.GL14C.GL_BLEND_SRC_ALPHA;
+import static org.lwjgl.opengl.GL14C.GL_BLEND_SRC_RGB;
+import static org.lwjgl.opengl.GL20C.*;
+import static org.lwjgl.opengl.GL30C.glBindVertexArray;
+import static org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING;
+import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
 
@@ -88,7 +101,7 @@ public class VoxyRenderSystem {
         if (Minecraft.getInstance().options.renderDistance().get()<3) {
             String msg = "Voxy: Having a vanilla render distance of 2 can cause rare culling near the edge of your screen issues, please use 3 or more";
             Logger.warn(msg);
-            Minecraft.getInstance().gui.chatListener().handleSystemMessage(Component.literal(msg), false);
+            Minecraft.getInstance().getChatListener().handleSystemMessage(Component.literal(msg), false);
         }
 
         //Fking HATE EVERYTHING AAAAAAAAAAAAAAAA
@@ -136,8 +149,8 @@ public class VoxyRenderSystem {
             this.viewportSelector = new ViewportSelector<>(sectionRenderer::createViewport);
 
             {
-                int minSec = Minecraft.getInstance().level.getMinSectionY() >> 5;
-                int maxSec = (Minecraft.getInstance().level.getMaxSectionY() - 1) >> 5;
+                int minSec = Minecraft.getInstance().level.getMinSection() >> 5;
+                int maxSec = (Minecraft.getInstance().level.getMaxSection() - 1) >> 5;
 
                 //Do some very cheeky stuff for MiB
                 if (VoxyCommon.IS_MINE_IN_ABYSS) {//TODO: make this somehow configurable
@@ -174,7 +187,11 @@ public class VoxyRenderSystem {
     }
 
 
-    public Viewport<?> setupViewport(Matrix4fc vanillaProjection, Matrix4fc modelView, FogParameters fogParameters, int width, int height, double cameraX, double cameraY, double cameraZ) {
+    public VoxyFogSnapshot getCapturedTerrainFog() {
+        return VoxyFogSnapshot.current();
+    }
+
+    public Viewport<?> setupViewport(Matrix4fc vanillaProjection, Matrix4fc modelView, VoxyFogSnapshot fogSnapshot, int width, int height, double cameraX, double cameraY, double cameraZ) {
         var viewport = this.getViewport();
         if (viewport == null) {
             return null;
@@ -216,7 +233,7 @@ public class VoxyRenderSystem {
                 .setModelView(new Matrix4f(modelView))
                 .setCamera(cameraX, cameraY, cameraZ)
                 .setScreenSize(width, height)
-                .setFogParameters(fogParameters)
+                .setFogSnapshot(fogSnapshot)
                 .update();
 
         if (VoxyClient.getOcclusionDebugState()==0) {
@@ -237,31 +254,22 @@ public class VoxyRenderSystem {
             return;//Only render on valid viewport
         }
 
-        if (sourceDepthTexture == 0) {
-            throw new IllegalStateException("Source depth texture cannot be 0");
+        if (sourceDepthTexture == 0 || sourceColourTexture == 0) {
+            throw new IllegalStateException("Source color and depth textures must be non-zero");
         }
 
+        RenderStateSnapshot renderState = RenderStateSnapshot.capture();
+        try {
         TimingStatistics.resetSamplers();
 
         TimingStatistics.all.start();
         GPUTiming.INSTANCE.marker();//Start marker
         TimingStatistics.main.start();
 
-        //TODO: optimize
-        int[] oldBufferBindings = new int[10];
-        for (int i = 0; i < oldBufferBindings.length; i++) {
-            oldBufferBindings[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
-        }
-
         GlStateManager._enableDepthTest();
         GlStateManager._depthFunc(this.properties.closerEqualDepthCompare());
         GlStateManager._depthMask(true);
         GlStateManager._disablePolygonOffset();
-
-        int oldFB = GL11.glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
-
-        int[] dims = new int[4];
-        glGetIntegerv(GL_VIEWPORT, dims);
 
         //this.autoBalanceSubDivSize();
 
@@ -324,45 +332,6 @@ public class VoxyRenderSystem {
 
         GPUTiming.INSTANCE.tick();
 
-        glBindFramebuffer(GlConst.GL_FRAMEBUFFER, oldFB);
-        glViewport(dims[0], dims[1], dims[2], dims[3]);
-
-        {//Reset state manager stuffs
-            GlStateManager._glUseProgram(0);
-            glUseProgram(0);
-            GlStateManager._enableDepthTest();
-            glEnable(GL_DEPTH_TEST);
-            glDisable(GL_STENCIL_TEST);
-
-            GlStateManager._glBindVertexArray(0);//Clear binding
-            glBindVertexArray(0);
-
-            GlStateManager._activeTexture(GlConst.GL_TEXTURE1);
-            for (int i = 0; i < 12; i++) {
-                GlStateManager._activeTexture(GlConst.GL_TEXTURE0+i);
-                GlStateManager._bindTexture(0);
-                glBindSampler(i, 0);
-            }
-
-            IrisUtil.clearIrisSamplers();//Thanks iris (sigh)
-
-            //TODO: should/needto actually restore all of these, not just clear them
-            //Clear all the bindings
-            for (int i = 0; i < oldBufferBindings.length; i++) {
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, oldBufferBindings[i]);
-            }
-            GlStateManager._blendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
-            glBlendEquation(GL_FUNC_ADD);
-            GlStateManager._blendFuncSeparate(0,0, 0, 0);
-            glBlendFunc(0, 0);
-            GlStateManager._disableBlend(0);
-            glDisable(GL_BLEND);
-            GlStateManager._depthFunc(GL_LESS);
-            glDepthFunc(GL_LESS);
-
-            //((SodiumShader) Iris.getPipelineManager().getPipelineNullable().getSodiumPrograms().getProgram(DefaultTerrainRenderPasses.CUTOUT).getInterface()).setupState(DefaultTerrainRenderPasses.CUTOUT, fogParameters);
-        }
-
         TimingStatistics.all.stop();
 
         //TimingStatistics.I.start();
@@ -392,6 +361,131 @@ public class VoxyRenderSystem {
         this.postProcessing.renderPost(viewport, matrices.projection(), boundFB);
         TimingStatistics.F.stop();
          */
+        } finally {
+            renderState.restore();
+        }
+    }
+
+    private record RenderStateSnapshot(int drawFramebuffer, int readFramebuffer, int drawBuffer, int readBuffer,
+                                       int program, int vertexArray, int activeTexture, int[] viewport,
+                                       boolean depthTest, int depthFunc, boolean depthMask,
+                                       boolean blend, int blendEquationRgb, int blendEquationAlpha,
+                                       int blendSrcRgb, int blendDstRgb, int blendSrcAlpha, int blendDstAlpha,
+                                       boolean cull, boolean scissor, int[] scissorBox,
+                                       boolean polygonOffset, float polygonOffsetFactor, float polygonOffsetUnits,
+                                       boolean stencil, int[] stencilState, int[] colorMask,
+                                       int[] textures, int[] samplers, int[] ssbos) {
+        private static RenderStateSnapshot capture() {
+            int[] viewport = new int[4];
+            glGetIntegerv(GL_VIEWPORT, viewport);
+            int[] scissorBox = new int[4];
+            glGetIntegerv(GL_SCISSOR_BOX, scissorBox);
+            int[] colorMask = new int[4];
+            glGetIntegerv(GL_COLOR_WRITEMASK, colorMask);
+            int[] stencilState = {
+                    glGetInteger(GL_STENCIL_FUNC), glGetInteger(GL_STENCIL_REF), glGetInteger(GL_STENCIL_VALUE_MASK),
+                    glGetInteger(GL_STENCIL_WRITEMASK), glGetInteger(GL_STENCIL_FAIL),
+                    glGetInteger(GL_STENCIL_PASS_DEPTH_FAIL), glGetInteger(GL_STENCIL_PASS_DEPTH_PASS),
+                    glGetInteger(GL_STENCIL_BACK_FUNC), glGetInteger(GL_STENCIL_BACK_REF),
+                    glGetInteger(GL_STENCIL_BACK_VALUE_MASK), glGetInteger(GL_STENCIL_BACK_WRITEMASK),
+                    glGetInteger(GL_STENCIL_BACK_FAIL), glGetInteger(GL_STENCIL_BACK_PASS_DEPTH_FAIL),
+                    glGetInteger(GL_STENCIL_BACK_PASS_DEPTH_PASS)
+            };
+            int activeTexture = glGetInteger(GL_ACTIVE_TEXTURE);
+            int[] textures = new int[16];
+            int[] samplers = new int[16];
+            for (int i = 0; i < textures.length; i++) {
+                glActiveTexture(GL_TEXTURE0 + i);
+                textures[i] = glGetInteger(GL_TEXTURE_BINDING_2D);
+                samplers[i] = glGetIntegeri(GL_SAMPLER_BINDING, i);
+            }
+            glActiveTexture(activeTexture);
+
+            int[] ssbos = new int[10];
+            for (int i = 0; i < ssbos.length; i++) {
+                ssbos[i] = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, i);
+            }
+
+            return new RenderStateSnapshot(
+                    glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING), glGetInteger(GL_READ_FRAMEBUFFER_BINDING),
+                    glGetInteger(GL_DRAW_BUFFER), glGetInteger(GL_READ_BUFFER),
+                    glGetInteger(GL_CURRENT_PROGRAM), glGetInteger(GL_VERTEX_ARRAY_BINDING), activeTexture, viewport,
+                    glIsEnabled(GL_DEPTH_TEST), glGetInteger(GL_DEPTH_FUNC), glGetBoolean(GL_DEPTH_WRITEMASK),
+                    glIsEnabled(GL_BLEND), glGetInteger(GL_BLEND_EQUATION_RGB), glGetInteger(GL_BLEND_EQUATION_ALPHA),
+                    glGetInteger(GL_BLEND_SRC_RGB), glGetInteger(GL_BLEND_DST_RGB),
+                    glGetInteger(GL_BLEND_SRC_ALPHA), glGetInteger(GL_BLEND_DST_ALPHA),
+                    glIsEnabled(GL_CULL_FACE), glIsEnabled(GL_SCISSOR_TEST), scissorBox,
+                    glIsEnabled(GL_POLYGON_OFFSET_FILL), glGetFloat(GL_POLYGON_OFFSET_FACTOR),
+                    glGetFloat(GL_POLYGON_OFFSET_UNITS), glIsEnabled(GL_STENCIL_TEST), stencilState, colorMask,
+                    textures, samplers, ssbos);
+        }
+
+        private void restore() {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, this.drawFramebuffer);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, this.readFramebuffer);
+            glDrawBuffer(this.drawBuffer);
+            glReadBuffer(this.readBuffer);
+            GlStateManager._viewport(this.viewport[0], this.viewport[1], this.viewport[2], this.viewport[3]);
+
+            for (int i = 0; i < this.textures.length; i++) {
+                glBindTextureUnit(i, this.textures[i]);
+                glBindSampler(i, this.samplers[i]);
+            }
+            GlStateManager._activeTexture(this.activeTexture);
+            int activeUnit = this.activeTexture - GL_TEXTURE0;
+            if (activeUnit >= 0 && activeUnit < this.textures.length) {
+                GlStateManager._bindTexture(this.textures[activeUnit]);
+            }
+
+            for (int i = 0; i < this.ssbos.length; i++) {
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, this.ssbos[i]);
+            }
+
+            GlStateManager._glUseProgram(this.program);
+            GlStateManager._glBindVertexArray(this.vertexArray);
+            setDepthTest(this.depthTest);
+            GlStateManager._depthFunc(this.depthFunc);
+            GlStateManager._depthMask(this.depthMask);
+            setBlend(this.blend);
+            GlStateManager._blendEquation(this.blendEquationRgb);
+            glBlendEquationSeparate(this.blendEquationRgb, this.blendEquationAlpha);
+            GlStateManager._blendFuncSeparate(this.blendSrcRgb, this.blendDstRgb, this.blendSrcAlpha, this.blendDstAlpha);
+            setCull(this.cull);
+            setScissor(this.scissor);
+            GlStateManager._scissorBox(this.scissorBox[0], this.scissorBox[1], this.scissorBox[2], this.scissorBox[3]);
+            setPolygonOffset(this.polygonOffset);
+            GlStateManager._polygonOffset(this.polygonOffsetFactor, this.polygonOffsetUnits);
+            GlStateManager._colorMask(this.colorMask[0] != 0, this.colorMask[1] != 0,
+                    this.colorMask[2] != 0, this.colorMask[3] != 0);
+            GlStateManager._stencilFunc(this.stencilState[0], this.stencilState[1], this.stencilState[2]);
+            GlStateManager._stencilMask(this.stencilState[3]);
+            GlStateManager._stencilOp(this.stencilState[4], this.stencilState[5], this.stencilState[6]);
+            glStencilFuncSeparate(GL_BACK, this.stencilState[7], this.stencilState[8], this.stencilState[9]);
+            glStencilMaskSeparate(GL_BACK, this.stencilState[10]);
+            glStencilOpSeparate(GL_BACK, this.stencilState[11], this.stencilState[12], this.stencilState[13]);
+            if (this.stencil) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+            BufferUploader.reset();
+        }
+
+        private static void setDepthTest(boolean enabled) {
+            if (enabled) GlStateManager._enableDepthTest(); else GlStateManager._disableDepthTest();
+        }
+
+        private static void setBlend(boolean enabled) {
+            if (enabled) GlStateManager._enableBlend(); else GlStateManager._disableBlend();
+        }
+
+        private static void setCull(boolean enabled) {
+            if (enabled) GlStateManager._enableCull(); else GlStateManager._disableCull();
+        }
+
+        private static void setScissor(boolean enabled) {
+            if (enabled) GlStateManager._enableScissorTest(); else GlStateManager._disableScissorTest();
+        }
+
+        private static void setPolygonOffset(boolean enabled) {
+            if (enabled) GlStateManager._enablePolygonOffset(); else GlStateManager._disablePolygonOffset();
+        }
     }
 
 
@@ -454,7 +548,7 @@ public class VoxyRenderSystem {
     private static Matrix4f computeProjectionMat(RenderProperties properties, Matrix4fc base) {
 
         //this jank is to capture the extra crap they inject like viewbobbing
-        var rawMCProj = Minecraft.getInstance().gameRenderer.gameRenderState().levelRenderState.cameraRenderState.projectionMatrix;
+        var rawMCProj = new Matrix4f(RenderSystem.getProjectionMatrix());
         var extraProjection = rawMCProj.invert(new Matrix4f()).mul(base);
 
         float near = getRenderDistance()<=32.0f?8f:16f;

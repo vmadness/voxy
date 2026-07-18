@@ -1,7 +1,6 @@
 package me.cortex.voxy.client.core.model;
 
 import net.caffeinemc.mods.sodium.client.util.color.ColorSRGB;
-import net.minecraft.util.ARGB;
 
 import java.util.Arrays;
 
@@ -278,8 +277,17 @@ public class TextureUtils {
                 r / 4,
                 g / 4,
                 b / 4,
-                darkend ? ((int) a) / 4 : ARGB.linearToSrgbChannel(a / 4)
+                darkend ? ((int) a) / 4 : linearToSrgbChannel(a / 4)
         );
+    }
+
+    //1.21.1 port: net.minecraft.util.ARGB (with #linearToSrgbChannel) doesn't exist pre-26.x;
+    //sodium's ColorSRGB doesn't expose a single-channel linear->sRGB conversion either, so this is
+    //a standard sRGB gamma-encode of a single (already-normalized) linear channel value.
+    private static int linearToSrgbChannel(float linear) {
+        linear = Math.max(0f, Math.min(1f, linear));
+        float srgb = linear <= 0.0031308f ? linear * 12.92f : 1.055f * (float) Math.pow(linear, 1.0 / 2.4) - 0.055f;
+        return Math.round(srgb * 255f);
     }
 
 }

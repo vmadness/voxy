@@ -2,32 +2,53 @@ package me.cortex.voxy.client.mixin.minecraft;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
+import me.cortex.voxy.client.core.rendering.VoxyFogSnapshot;
+import com.mojang.blaze3d.shaders.FogShape;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Camera;
-import net.minecraft.client.DeltaTracker;
-import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.fog.FogData;
-import net.minecraft.client.renderer.fog.FogRenderer;
+import net.minecraft.client.renderer.FogRenderer;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.material.FogType;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(value = FogRenderer.class, priority = 900)//We must execute before sodium
+@Mixin(value = FogRenderer.class, priority = 900)
 public class MixinFogRenderer {
-    @Inject(method = "setupFog", at = @At("RETURN"))
-    private void voxy$modifyFog(Camera camera, int renderDistanceInChunks, DeltaTracker deltaTracker, float darkenWorldAmount, ClientLevel level, CallbackInfoReturnable<FogData> cir) {
-        if (!VoxyConfig.CONFIG.isRenderingEnabled()) return;
+    private static final float EPSILON = 1.0E-3F;
 
-        var vrs = IVoxyRenderSystemHolder.getNullable();
-        if (vrs == null) return;
-        var data = cir.getReturnValue();
-        boolean fogIsDamnClose = data.environmentalEnd<10;
-        if (!VoxyConfig.CONFIG.useEnvironmentalFog && !fogIsDamnClose) {
-            data.environmentalStart = 99999999;
-            data.environmentalEnd = 99999999;
+    @Inject(method = "setupFog(Lnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/FogRenderer$FogMode;FZF)V", at = @At("TAIL"))
+    private static void voxy$captureTerrainFog(Camera camera, FogRenderer.FogMode fogMode, float viewDistance,
+                                                boolean thickFog, float tickDelta, CallbackInfo ci) {
+        if (fogMode != FogRenderer.FogMode.FOG_TERRAIN) {
+            return;
         }
 
-        data.renderDistanceStart = 999999999;
-        data.renderDistanceEnd = 999999999;
+        float legacyStart = RenderSystem.getShaderFogStart();
+        float legacyEnd = RenderSystem.getShaderFogEnd();
+        FogShape shape = RenderSystem.getShaderFogShape();
+        float distanceStart = viewDistance - Mth.clamp(viewDistance / 10.0F, 4.0F, 64.0F);
+        boolean normalDistanceFog = camera.getFluidInCamera() == FogType.NONE && !thickFog
+                && Math.abs(legacyStart - distanceStart) <= EPSILON
+                && Math.abs(legacyEnd - viewDistance) <= EPSILON
+                && shape == FogShape.CYLINDER;
+
+        float[] color = RenderSystem.getShaderFogColor();
+        VoxyFogSnapshot snapshot = new VoxyFogSnapshot(
+                normalDistanceFog ? VoxyFogSnapshot.DISABLED : legacyStart,
+                normalDistanceFog ? VoxyFogSnapshot.DISABLED : legacyEnd,
+                distanceStart, viewDistance,
+                color[0], color[1], color[2], color[3], shape);
+        VoxyFogSnapshot.publish(snapshot);
+
+        if (!VoxyConfig.CONFIG.isRenderingEnabled() || IVoxyRenderSystemHolder.getNullable() == null) {
+            return;
+        }
+
+        if (normalDistanceFog || (!VoxyConfig.CONFIG.useEnvironmentalFog && legacyEnd >= 10.0F)) {
+            RenderSystem.setShaderFogStart(VoxyFogSnapshot.DISABLED);
+            RenderSystem.setShaderFogEnd(VoxyFogSnapshot.DISABLED);
+        }
     }
 }

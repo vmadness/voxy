@@ -5,7 +5,7 @@ import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.TextureAtlas;
-import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceLocation;
 
 import static org.lwjgl.opengl.GL11.GL_TEXTURE_MAG_FILTER;
 import static org.lwjgl.opengl.GL11.GL_TEXTURE_MIN_FILTER;
@@ -32,9 +32,12 @@ public class ModelStore {
         this.textures = RenderResourceReuse.getOrCreateModelStoreTextureAtlas();
 
         //Limit the mips of the texture to match that of the terrain atlas
+        //1.21.1: TextureAtlas's mip field is named "mipLevel" (dev's 26.x "maxMipLevel" doesn't exist);
+        //NOTE: voxy.accesswidener still widens the old "maxMipLevel" name (task 8/access-widener rewrite,
+        //outside this file-ownership pass) and needs updating to "mipLevel" for this to actually resolve.
         int mipLvl = ((TextureAtlas) Minecraft.getInstance().getTextureManager()
-                .getTexture(Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")))
-                .maxMipLevel;
+                .getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")))
+                .mipLevel;
 
         glSamplerParameteri(this.blockSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
         glSamplerParameteri(this.blockSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);

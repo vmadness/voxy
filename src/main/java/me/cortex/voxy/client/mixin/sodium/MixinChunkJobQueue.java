@@ -17,7 +17,7 @@ import java.util.concurrent.Semaphore;
 public class MixinChunkJobQueue {
     @Unique private MultiThreadPrioritySemaphore.Block voxy$semaphoreBlock;
 
-    @Redirect(method = "<init>", at = @At(value = "NEW", target = "(I)Ljava/util/concurrent/Semaphore;"))
+    @Redirect(method = "<init>()V", at = @At(value = "NEW", target = "java/util/concurrent/Semaphore"), remap = false, require = 1)
     private Semaphore voxy$injectUnifiedPool(int permits) {
         var instance = VoxyCommon.getInstance();
         if (instance != null && !VoxyConfig.CONFIG.dontUseSodiumBuilderThreads) {
@@ -27,8 +27,8 @@ public class MixinChunkJobQueue {
         return new Semaphore(permits);
     }
 
-    @Inject(method = "shutdown", at = @At("RETURN"))
-    private void voxy$injectAtShutdown(CallbackInfoReturnable ci) {
+    @Inject(method = "shutdown()Ljava/util/Collection;", at = @At("RETURN"), remap = false)
+    private void voxy$injectAtShutdown(CallbackInfoReturnable<?> ci) {
         if (this.voxy$semaphoreBlock != null) {
             this.voxy$semaphoreBlock.free();
         }
