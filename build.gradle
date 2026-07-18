@@ -215,7 +215,7 @@ if (!isInGHA) {
     }
 }
 
-def smartDependency(String property, boolean runtime = false, String maven = null, boolean compile = true) {
+def smartDependency(String property, boolean runtime = false, String maven = null, boolean compile = true, boolean patchLoomVersion = false) {
     String ver;
     if (project.hasProperty("runtime."+property)) {
         ver = project["runtime."+property];
@@ -242,6 +242,9 @@ def smartDependency(String property, boolean runtime = false, String maven = nul
         }
 
         dep = (maven!=null?(maven+":"):"")+ver;
+    }
+    if (patchLoomVersion) {
+        dep = patchLoomVersionJar(dep)
     }
     dependencies {
         if (compile && runtime) {
@@ -308,7 +311,11 @@ dependencies {
 
     smartDependency("modmenu_version", true)
     smartDependency("lithium_version", true)
-    smartDependency("iris_version")
+    // 1.21.1 port workaround: iris 1.8.14-beta.1+1.21.1-fabric (required by
+    // sodium 0.8.12, see patchLoomVersionJar above) was built with Loom
+    // 1.16.3, tripping the same Loom version gate as sodium. Patch its
+    // manifest the same way.
+    smartDependency("iris_version", false, null, true, true)
     // nvidium/vivecraft/flashback/chunky: disabled for the 1.21.1 port (no
     // matching build tracked yet); re-enable once compat mixins are ported.
     // See gradle.properties for the (commented) version properties.
@@ -437,7 +444,8 @@ jar {
     }
 }
 
-project.ext.lwjglVersion = "3.4.1"
+// MC 1.21.1 / Sodium 0.8.12 require LWJGL 3.3.3; do not bump without checking Sodium's driver version check.
+project.ext.lwjglVersion = "3.3.3"
 project.ext.lwjglNatives = "natives-windows"
 
 repositories {

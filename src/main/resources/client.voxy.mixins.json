@@ -21,7 +21,6 @@
     "minecraft.MixinRenderSystem",
     "minecraft.session.MixinClientPacketListener",
     "minecraft.session.MixinMinecraft",
-    "minecraft.util.MixinBlockableEventLoop",
     "minecraft.util.MixinClientCommonPacketListenerImpl",
     "minecraft.util.MixinGlDebug",
     "minecraft.util.MixinGPUSelect",
