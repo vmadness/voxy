@@ -25,28 +25,29 @@ public class WorldUpdater {
             var worldSection = into.acquire(lvl, section.x >> (lvl + 1), section.y >> (lvl + 1), section.z >> (lvl + 1));
 
             int emptinessStateChange = 0;
-            //Propagate the child existence state of the previous iteration to this section
-            if (lvl != 0 && shouldCheckEmptiness) {
-                emptinessStateChange = worldSection.updateEmptyChildState(previousSection);
-                //We kept the previous section acquired, so we need to release it
-                previousSection.release();
-                previousSection = null;
-            }
-
-            long status = insertSectionLvlIntoWorld(section, worldSection);
-            boolean didStateChange = (status&1)==1;
-            int airCount = (int) ((status>>1)&0x1FFF);
-
-
-            if (lvl == 0) {
-                int nonAirCountDelta = section.lvl0NonAirCount-(4096-airCount);
-                if (nonAirCountDelta != 0) {
-                    worldSection.addNonEmptyBlockCount(nonAirCountDelta);
-                    emptinessStateChange = worldSection.updateLvl0State() ? 2 : 0;
+            boolean didStateChange;
+            boolean completionChanged = false;
+            synchronized (worldSection) {
+                // Data, emptiness metadata, completion and revision form one observable commit.
+                if (lvl != 0 && shouldCheckEmptiness) {
+                    emptinessStateChange = worldSection.updateEmptyChildState(previousSection);
                 }
-            }
 
-            if (didStateChange||(emptinessStateChange!=0)) {
+                long status = insertSectionLvlIntoWorld(section, worldSection);
+                didStateChange = (status&1)==1;
+                int airCount = (int) ((status>>1)&0x1FFF);
+
+                if (lvl == 0) {
+                    int nonAirCountDelta = section.lvl0NonAirCount-(4096-airCount);
+                    if (nonAirCountDelta != 0) {
+                        worldSection.addNonEmptyBlockCount(nonAirCountDelta);
+                        emptinessStateChange = worldSection.updateLvl0State() ? 2 : 0;
+                    }
+                    completionChanged = worldSection.markLvl0ChildComplete(section.x, section.y, section.z);
+                }
+
+                if (didStateChange || emptinessStateChange != 0 || completionChanged) {
+                    worldSection.commitMutation();
                 //TODO: somehow foward the neighbors that are facing the updated area, this allows forwarding to the dirty consumer
                 // which can decide wether to dispatch mesh rebuilds to the surounding sections
                 //Bitmask of neighboring sections
@@ -61,7 +62,17 @@ public class WorldUpdater {
                     neighbors |= ((section.z^(section.z+1))>>(lvl+1))==0?0:1<<5;//+z
                 }
 
-                into.markDirty(worldSection, (didStateChange?UPDATE_TYPE_BLOCK_BIT:0)|(emptinessStateChange!=0?UPDATE_TYPE_CHILD_EXISTENCE_BIT:0), neighbors);
+                    into.markDirty(worldSection,
+                            (didStateChange || completionChanged ? UPDATE_TYPE_BLOCK_BIT : 0)
+                                    | (emptinessStateChange != 0 ? UPDATE_TYPE_CHILD_EXISTENCE_BIT : 0),
+                            neighbors);
+                }
+            }
+
+            if (lvl != 0 && shouldCheckEmptiness) {
+                // We kept the previous section acquired to read its child state.
+                previousSection.release();
+                previousSection = null;
             }
 
             //Need to release the section after using it

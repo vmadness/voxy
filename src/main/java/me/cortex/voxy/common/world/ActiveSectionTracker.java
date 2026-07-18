@@ -32,6 +32,7 @@ public final class ActiveSectionTracker {
         public volatile int preAcquireCount;
         public volatile int postAcquireCount;
         public volatile T obj;
+        public volatile Throwable failure;
     }
 
     private final AtomicInteger loadedSections = new AtomicInteger();
@@ -67,6 +68,19 @@ public final class ActiveSectionTracker {
 
     public WorldSection acquire(int lvl, int x, int y, int z, boolean nullOnEmpty) {
         return this.acquire(WorldEngine.getWorldSectionId(lvl, x, y, z), nullOnEmpty);
+    }
+
+    WorldSection acquireIfLoaded(long key) {
+        int index = this.getCacheArrayIndex(key);
+        long stamp = this.locks[index].readLock();
+        try {
+            VolatileHolder<WorldSection> holder = this.loadedSectionCache[index].get(key);
+            WorldSection section = holder == null ? null : holder.obj;
+            if (section != null && section.tryAcquire()) return section;
+            return null;
+        } finally {
+            this.locks[index].unlockRead(stamp);
+        }
     }
 
     public WorldSection acquire(long key, boolean nullOnEmpty) {
@@ -144,7 +158,24 @@ public final class ActiveSectionTracker {
                         WorldEngine.getZ(key),
                         this);
 
-                status = this.loader.load(section);
+                try {
+                    status = this.loader.load(section);
+                } catch (Throwable throwable) {
+                    // Publish a terminal state before removing the holder. Threads which already
+                    // observed this holder must not wait forever for an object that will never exist.
+                    holder.failure = throwable;
+                    VarHandle.releaseFence();
+
+                    long failureStamp = lock.writeLock();
+                    try {
+                        cache.remove(key, holder);
+                    } finally {
+                        lock.unlockWrite(failureStamp);
+                    }
+                    this.loadedSections.decrementAndGet();
+                    section._releaseArray();
+                    throw new SectionLoadException(key, throwable);
+                }
 
                 if (status < 0) {
                     //TODO: Instead if throwing an exception do something better, like attempting to regen
@@ -180,6 +211,10 @@ public final class ActiveSectionTracker {
             //TODO: mark the time the loading started in nanos, then here if it has been a while, spin lock, else jump back to the executing service and do work
             VarHandle.fullFence();
             while ((section = holder.obj) == null) {
+                Throwable failure = holder.failure;
+                if (failure != null) {
+                    throw new SectionLoadException(key, failure);
+                }
                 VarHandle.fullFence();
                 Thread.onSpinWait();
                 Thread.yield();
@@ -204,6 +239,12 @@ public final class ActiveSectionTracker {
         }
     }
 
+    private static final class SectionLoadException extends RuntimeException {
+        private SectionLoadException(long key, Throwable cause) {
+            super("Unable to load section " + WorldEngine.pprintPos(key), cause);
+        }
+    }
+
     void tryUnload(WorldSection section, int hints) {
         if (this.engine != null) this.engine.lastActiveTime = System.currentTimeMillis();
         if (section.shouldSave()&&this.engine!=null) {
@@ -212,14 +253,14 @@ public final class ActiveSectionTracker {
                 if (section.shouldSave()) {//If we should try enqueue
                     if (!this.engine.saveSection(section, false, true)) {
                         //we didnt enqueue the section in the save queue so we must unload it manually
-                        Logger.info("section raced to into save queue, we lost");
+                        Logger.info("section already saved by racing thread, unloading normally");
                         section.release(true, hints);//We need to try unload cause else we may loose state
                     } else {
                         //section is queued, and we gave it the acquired section, so we can just return
                         return;//We just return
                     }
                 } else {
-                    Logger.warn("section raced to save queue, we lost");
+                    Logger.warn("section already saved by racing thread, unloading normally");
                     section.release(true, hints);//Unload cause we need to retry the whole thing again
                 }
             } else {

@@ -177,7 +177,7 @@ public class ServiceManager {
         }
     }
 
-    void handleException(Service service, Exception exception) {
+    void handleException(Service service, Throwable exception) {
         Logger.error("Service '"+service.name+"' on thread '"+Thread.currentThread().getName()+"' had an exception", exception);
     }
 }

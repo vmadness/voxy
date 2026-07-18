@@ -3,6 +3,7 @@
   "id": "voxy",
   "version": "${version}",
   "custom": {
+    "voxyserverApi": 1,
     "commit": "${commit}",
     "buildtime": "${buildtime}"
   },

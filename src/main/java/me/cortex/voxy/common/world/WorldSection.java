@@ -54,10 +54,12 @@ public final class WorldSection {
     long[] data = null;
     volatile int nonEmptyBlockCount = 0;//Note: only needed for level 0 sections
     volatile byte nonEmptyChildren;
+    byte lvl0CompletionMask;
 
     final ActiveSectionTracker tracker;
     volatile boolean inSaveQueue;
     volatile boolean isDirty;
+    private long revision;
 
     //When the first bit is set it means its loaded
     @SuppressWarnings("all")
@@ -206,16 +208,17 @@ public final class WorldSection {
         return ((y&M)<<10)|((z&M)<<5)|(x&M);
     }
 
-    public long set(int x, int y, int z, long id) {
+    public synchronized long set(int x, int y, int z, long id) {
         //TODO: this needs to update the block counts
         int idx = getIndex(x,y,z);
         long old = this.data[idx];
         this.data[idx] = id;
+        if (old != id) revision++;
         return old;
     }
 
     //Generates a copy of the data array, this is to help with atomic operations like rendering
-    public long[] copyData() {
+    public synchronized long[] copyData() {
         this.assertNotFree();
         return Arrays.copyOf(this.data, this.data.length);
     }
@@ -224,10 +227,60 @@ public final class WorldSection {
         copyDataTo(cache, 0);
     }
 
-    public void copyDataTo(long[] cache, int dstOffset) {
+    public synchronized void copyDataTo(long[] cache, int dstOffset) {
         this.assertNotFree();
         if ((cache.length-dstOffset) < this.data.length) throw new IllegalArgumentException();
         System.arraycopy(this.data, 0, cache, dstOffset, this.data.length);
+    }
+
+    /** A data/revision pair captured atomically with respect to WorldUpdater mutations. */
+    public record Snapshot(long revision, byte completionMask, long[] data) {
+        public boolean isComplete() {
+            return Byte.toUnsignedInt(completionMask) == 0xFF;
+        }
+    }
+
+    public synchronized Snapshot snapshot() {
+        this.assertNotFree();
+        return new Snapshot(this.revision, this.lvl == 0 ? this.lvl0CompletionMask : (byte) 0xFF,
+                Arrays.copyOf(this.data, this.data.length));
+    }
+
+    /** Atomically replaces this section's level-0 contents with a committed snapshot. */
+    public synchronized void replaceData(long[] replacement, int nonAirCount) {
+        this.assertNotFree();
+        if (this.lvl != 0 || replacement.length != SECTION_VOLUME
+                || nonAirCount < 0 || nonAirCount > SECTION_VOLUME) {
+            throw new IllegalArgumentException("invalid level-0 section replacement");
+        }
+        System.arraycopy(replacement, 0, this.data, 0, SECTION_VOLUME);
+        NON_EMPTY_BLOCK_HANDLE.set(this, nonAirCount);
+        NON_EMPTY_CHILD_HANDLE.set(this, (byte) (nonAirCount == 0 ? 0 : 0xFF));
+        this.lvl0CompletionMask = (byte) 0xFF;
+        revision++;
+    }
+
+    /** Called by package writers after completing one atomic section mutation. */
+    void commitMutation() {
+        if (!Thread.holdsLock(this)) throw new IllegalStateException("section mutation lock not held");
+        revision++;
+    }
+
+    boolean markLvl0ChildComplete(int childX, int childY, int childZ) {
+        if (!Thread.holdsLock(this) || this.lvl != 0) {
+            throw new IllegalStateException("invalid level-0 completion update");
+        }
+        byte previous = this.lvl0CompletionMask;
+        this.lvl0CompletionMask = (byte) (previous | (1 << getChildIndex(childX, childY, childZ)));
+        return previous != this.lvl0CompletionMask;
+    }
+
+    public synchronized byte getCompletionMask() {
+        return this.lvl == 0 ? this.lvl0CompletionMask : (byte) 0xFF;
+    }
+
+    public synchronized boolean isComplete() {
+        return this.lvl != 0 || Byte.toUnsignedInt(this.lvl0CompletionMask) == 0xFF;
     }
 
     public static int getChildIndex(int x, int y, int z) {

@@ -215,6 +215,29 @@ if (!isInGHA) {
     }
 }
 
+// Declares one optional/compat-mod dependency read from gradle.properties, with a per-property
+// override convention so CI and local dev can pin different versions without editing this file:
+//   - "runtime.<property>" set   -> use that version, forced to runtime-only (compile=false semantics
+//                                    via runtime=true below; see the compile&&runtime branching).
+//   - "compileOnly.<property>" set -> use that version, forced to compile-only (not shipped at runtime).
+//   - neither set                -> fall back to the plain "<property>" value with the caller's
+//                                    runtime/compile defaults.
+// If the resolved version string ends in ".jar" it's treated as a local file dependency instead of
+// a maven coordinate.
+//
+// Params:
+//   property         - the gradle.properties key to read (e.g. "sodium_version"); also used to
+//                       derive the default modrinth maven coordinate ("maven.modrinth:<prefix>") when
+//                       `maven` is null, using the part of the property name before the first "_".
+//   runtime          - whether the dependency should be available at runtime; combined with
+//                       `compile` to pick modImplementation/modCompileOnly/modRuntimeOnlyMsk. May be
+//                       overridden by the runtime./compileOnly. property convention above.
+//   maven            - explicit maven coordinate prefix (without ":<version>"); null derives one
+//                       from `property` as described above.
+//   compile          - whether the dependency should be available at compile time (see `runtime`).
+//   patchLoomVersion - if true, run the resolved jar through patchLoomVersionJar() (see above) to
+//                       work around Loom's Fabric-Loom-Version gate before adding it as a dependency.
+// Returns the resolved version string, or null if the property wasn't set (dependency skipped).
 def smartDependency(String property, boolean runtime = false, String maven = null, boolean compile = true, boolean patchLoomVersion = false) {
     String ver;
     if (project.hasProperty("runtime."+property)) {
@@ -316,13 +339,16 @@ dependencies {
     // 1.16.3, tripping the same Loom version gate as sodium. Patch its
     // manifest the same way.
     smartDependency("iris_version", false, null, true, true)
-    // nvidium/vivecraft/flashback/chunky: disabled for the 1.21.1 port (no
-    // matching build tracked yet); re-enable once compat mixins are ported.
-    // See gradle.properties for the (commented) version properties.
-    //smartDependency("chunky_version")
-    //smartDependency("vivecraft_version")
-    //smartDependency("flashback_version")
-    //smartDependency("nvidium_version")
+    // T13: nvidium/vivecraft/flashback/chunky compat restored, gated at runtime via
+    // VoxyMixinPlugin/isModLoaded checks (see PORT_1211.md T13). All compile-only: these
+    // mods are optional and must never become hard runtime dependencies.
+    smartDependency("chunky_version")
+    smartDependency("vivecraft_version")
+    smartDependency("flashback_version")
+    // nvidium is published via GitHub releases (drouarb org), not modrinth's default
+    // "maven.modrinth:<property>" convention, so pass its group:artifact explicitly. The ivy
+    // repo/filter for this is declared above in `repositories {}`.
+    smartDependency("nvidium_version", false, "drouarb:nvidium")
 
     //modCompileOnly("maven.modrinth:starlight:1.1.3+1.20.4")
 
@@ -335,7 +361,7 @@ dependencies {
     //modRuntimeOnlyMsk("maven.modrinth:fabric-permissions-api:0.3.3")
     //modRuntimeOnly("maven.modrinth:nsight-loader:1.2.0")
 
-    //modImplementation('io.github.douira:glsl-transformer:2.0.1')
+    //modImplementation('io.github.douira:glsl-transformer:3.0.0-pre3')
 
     //compileOnly("maven.modrinth:vivecraft:26.1.1-1.3.7-b2-fabric")
 
@@ -358,15 +384,10 @@ tasks.withType(JavaCompile).configureEach {
 sourceSets {
     main {
         java {
-            // 1.21.1 port: flashback/nvidium/vivecraft/chunky deps are disabled (see the
-            // commented-out dependency block below) so their compat mixins/sources reference
-            // classes that are absent from the compile classpath. Excluded from compilation
-            // until those mods are re-enabled for this port; entries also commented out of the
-            // relevant *.mixins.json (T13 in PORT_1211.md).
-            exclude 'me/cortex/voxy/client/mixin/flashback/**'
-            exclude 'me/cortex/voxy/client/mixin/nvidium/**'
+            // T13: flashback/nvidium/chunky compat mixins restored (compileOnly deps added
+            // above); no vivecraft mixin dir exists (its compat is runtime-reflection-style in
+            // ViewportSelector, not a mixin), so that exclude is left in place harmlessly.
             exclude 'me/cortex/voxy/client/mixin/vivecraft/**'
-            exclude 'me/cortex/voxy/commonImpl/mixin/chunky/**'
         }
     }
 }
@@ -456,17 +477,20 @@ repositories {
 dependencies {
     implementation platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
 
-    implementation "org.lwjgl:lwjgl"
+    // Voxy common code directly uses MemoryStack/MemoryUtil. Minecraft's client
+    // supplies lwjgl-core, but a dedicated server does not, so it must travel
+    // with Voxy just like the LMDB and Zstd bindings do.
+    include(implementation "org.lwjgl:lwjgl")
     include(implementation "org.lwjgl:lwjgl-lmdb")
     include(implementation "org.lwjgl:lwjgl-zstd")
-    runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-windows"
-    runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux"
+    include(runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-windows")
+    include(runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux")
     include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-windows")
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-windows")
     include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-linux")
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-linux")
     if (INCLUDE_OTHER_ARCHS) {
-        runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux-arm64"
+        include(runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux-arm64")
         include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-linux-arm64")
         include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-linux-arm64")
     }
@@ -502,3 +526,62 @@ if (!isInGHA) {
         }
     }
 }*/
+
+tasks.register("commonInvariantTest", JavaExec) {
+    group = "verification"
+    description = "Runs headless Voxy common persistence and ingestion invariants"
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = "me.cortex.voxy.common.world.VoxyCommonInvariantTestMain"
+    enableAssertions = true
+}
+
+tasks.register("verifyDedicatedLwjglPackaging") {
+    group = "verification"
+    description = "Verifies that the release jar is self-contained for dedicated-server LWJGL use"
+    dependsOn tasks.named("remapJar")
+
+    doLast {
+        def releaseJar = tasks.named("remapJar").get().archiveFile.get().asFile
+        def requiredNestedJars = [
+                "META-INF/jars/lwjgl-${lwjglVersion}.jar",
+                "META-INF/jars/lwjgl-${lwjglVersion}-natives-linux.jar",
+                "META-INF/jars/lwjgl-${lwjglVersion}-natives-windows.jar"
+        ]
+        def requiredClasses = [
+                "org/lwjgl/system/MemoryStack.class",
+                "org/lwjgl/system/MemoryUtil.class"
+        ] as Set
+
+        new java.util.zip.ZipFile(releaseJar).withCloseable { outer ->
+            requiredNestedJars.each { entryName ->
+                if (outer.getEntry(entryName) == null) {
+                    throw new GradleException("Dedicated Voxy artifact is missing ${entryName}")
+                }
+            }
+
+            def coreEntry = outer.getEntry(requiredNestedJars[0])
+            def foundClasses = [] as Set
+            outer.getInputStream(coreEntry).withCloseable { coreInput ->
+                new java.util.zip.ZipInputStream(coreInput).withCloseable { nested ->
+                    for (def entry = nested.nextEntry; entry != null; entry = nested.nextEntry) {
+                        if (requiredClasses.contains(entry.name)) foundClasses.add(entry.name)
+                    }
+                }
+            }
+            if (foundClasses != requiredClasses) {
+                throw new GradleException("Nested lwjgl-core is missing ${requiredClasses - foundClasses}")
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn tasks.named("commonInvariantTest")
+    dependsOn tasks.named("verifyDedicatedLwjglPackaging")
+}
+
+tasks.named("test") {
+    // Common invariants use a dependency-free JavaExec harness instead of a test framework.
+    failOnNoDiscoveredTests = false
+}

@@ -9,6 +9,8 @@ import org.lwjgl.system.MemoryUtil;
 
 public class SaveLoadSystem3 {
     public static final int STORAGE_VERSION = 0;
+    private static final long COMPLETION_METADATA_MARKER = 1L << 24;
+    private static final int COMPLETION_MASK_SHIFT = 25;
 
     private record SerializationCache(Long2ShortOpenHashMap lutMapCache, MemoryBuffer memoryBuffer) {
         public SerializationCache() {
@@ -69,7 +71,8 @@ public class SaveLoadSystem3 {
         long metadata = 0;
         metadata |= Integer.toUnsignedLong(LUT.size());//Bottom 2 bytes
         metadata |= Byte.toUnsignedLong(section.getNonEmptyChildren())<<16;//Next byte
-        //5 bytes free
+        metadata |= COMPLETION_METADATA_MARKER;
+        metadata |= Byte.toUnsignedLong(section.getCompletionMask()) << COMPLETION_MASK_SHIFT;
 
         MemoryUtil.memPutLong(metadataPtr, metadata);
         //TODO: do hash
@@ -89,6 +92,11 @@ public class SaveLoadSystem3 {
 
         final long metadata = MemoryUtil.memGetLong(ptr); ptr += 8;
         section.nonEmptyChildren = (byte) ((metadata>>>16)&0xFF);
+        section.lvl0CompletionMask = section.lvl == 0
+                ? ((metadata & COMPLETION_METADATA_MARKER) != 0
+                    ? (byte) ((metadata >>> COMPLETION_MASK_SHIFT) & 0xFF)
+                    : (byte) 0)
+                : (byte) 0xFF;
         final long lutBasePtr = ptr + WorldSection.SECTION_VOLUME * 2;
 
         final var blockData = section.data;

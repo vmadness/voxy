@@ -12,19 +12,48 @@ import me.cortex.voxy.common.world.WorldUpdater;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
 import net.minecraft.core.SectionPos;
+import net.minecraft.core.Holder;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.chunk.PalettedContainer;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class VoxelIngestService {
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
     private final Service service;
-    private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight){}
+    /** The submission result and the point at which every accepted section is committed to the world. */
+    public record IngestHandle(boolean accepted, CompletableFuture<Boolean> completion) {
+        private static IngestHandle rejected() {
+            return new IngestHandle(false, CompletableFuture.completedFuture(false));
+        }
+    }
+
+    private static final class IngestBatch {
+        private final AtomicInteger remaining;
+        private final AtomicBoolean successful = new AtomicBoolean(true);
+        private final CompletableFuture<Boolean> completion = new CompletableFuture<>();
+
+        private IngestBatch(int count) {
+            this.remaining = new AtomicInteger(count);
+        }
+
+        private void finish(boolean success) {
+            if (!success) successful.set(false);
+            if (remaining.decrementAndGet() == 0) completion.complete(successful.get());
+        }
+    }
+
+    private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section,
+                                 DataLayer blockLight, DataLayer skyLight, IngestBatch batch){}
     private final ConcurrentLinkedDeque<IngestSection> ingestQueue = new ConcurrentLinkedDeque<>();
 
     public VoxelIngestService(ServiceManager pool) {
@@ -33,6 +62,7 @@ public class VoxelIngestService {
 
     private void processJob() {
         var task = this.ingestQueue.pop();
+        boolean success = false;
         try {
             var section = task.section;
             var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
@@ -50,9 +80,13 @@ public class VoxelIngestService {
                 WorldVoxilizedSectionMipper.mipSection(csec, task.world.getMapper());
                 WorldUpdater.insertUpdate(task.world, csec);
             }
+            success = true;
+        } catch (Throwable throwable) {
+            Logger.error("Voxel ingest job failed", throwable);
         } finally {
             //Release the ref we had acquired for the world
             task.world.releaseRef();
+            task.batch.finish(success);
         }
     }
 
@@ -92,8 +126,12 @@ public class VoxelIngestService {
     }
 
     public boolean enqueueIngest(WorldEngine engine, LevelChunk chunk) {
+        return enqueueIngestWithCompletion(engine, chunk).accepted();
+    }
+
+    public IngestHandle enqueueIngestWithCompletion(WorldEngine engine, LevelChunk chunk) {
         if (!this.service.isLive()) {
-            return false;
+            return IngestHandle.rejected();
         }
         if (!engine.isLive()) {
             throw new IllegalStateException("Tried inserting chunk into WorldEngine that was not alive");
@@ -117,30 +155,20 @@ public class VoxelIngestService {
             gotLighting = true;
         }
 
-        if (allEmpty&&!gotLighting) {
-            //Special case all empty chunk columns, we need to clear it out
-            i = chunk.getMinSection() - 1;
-            for (var section : chunk.getSections()) {
-                i++;
-                if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
-                engine.acquireRef();
-                this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, null, null));
-                try {
-                    this.service.execute();
-                } catch (Exception e) {
-                    Logger.error("Executing had an error: assume shutting down, aborting",e);
-                    engine.releaseRef();//we must manually release
-                    break;
-                }
-            }
-        }
+        if (!gotLighting && !allEmpty) return IngestHandle.rejected();
 
-        if (!gotLighting) {
-            return false;
-        }
+        var blp = gotLighting ? lightingProvider.getLayerListener(LightLayer.BLOCK) : null;
+        var slp = gotLighting ? lightingProvider.getLayerListener(LightLayer.SKY) : null;
 
-        var blp = lightingProvider.getLayerListener(LightLayer.BLOCK);
-        var slp = lightingProvider.getLayerListener(LightLayer.SKY);
+        int taskCount = 0;
+        int countY = chunk.getMinSection() - 1;
+        for (var section : chunk.getSections()) {
+            countY++;
+            if (section != null && shouldIngestSection(section, chunk.getPos().x, countY, chunk.getPos().z)) taskCount++;
+        }
+        if (taskCount == 0) return IngestHandle.rejected();
+        IngestBatch batch = new IngestBatch(taskCount);
+        boolean anyAccepted = false;
 
 
         i = chunk.getMinSection() - 1;
@@ -150,12 +178,12 @@ public class VoxelIngestService {
             //if (section.isEmpty()) continue;
             var pos = SectionPos.of(chunk.getPos(), i);
 
-            var bl = blp.getDataLayerData(pos);
+            var bl = blp == null ? null : blp.getDataLayerData(pos);
             if (bl != null) {
                 bl = bl.copy();
             }
 
-            var sl = slp.getDataLayerData(pos);
+            var sl = slp == null ? null : slp.getDataLayerData(pos);
             if (sl != null) {
                 sl = sl.copy();
             }
@@ -165,16 +193,35 @@ public class VoxelIngestService {
             //    continue;
             //}
             engine.acquireRef();//This is not great but dont really have a better solution as all the others have there own problem
-            this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, bl, sl));//TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
+            // Chunk sections remain mutable on the tick thread. Snapshot both palettes before handoff.
+            LevelChunkSection sectionSnapshot = snapshotSection(section);
+            IngestSection task = new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, sectionSnapshot, bl, sl, batch);
+            this.ingestQueue.add(task);
             try {
                 this.service.execute();
+                anyAccepted = true;
             } catch (Exception e) {
                 Logger.error("Executing had an error: assume shutting down, aborting",e);
-                engine.releaseRef();//we must manually release
-                break;
+                if (this.ingestQueue.remove(task)) {
+                    engine.releaseRef();
+                    batch.finish(false);
+                } else {
+                    // A worker already owns the task and will complete/release it.
+                    anyAccepted = true;
+                }
             }
         }
-        return true;
+        return new IngestHandle(anyAccepted, batch.completion);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static LevelChunkSection snapshotSection(LevelChunkSection section) {
+        if (!(section.getBiomes() instanceof PalettedContainer<?> biomeContainer)) {
+            throw new IllegalStateException("unsupported readonly biome container implementation");
+        }
+        PalettedContainer<Holder<Biome>> biomes =
+                ((PalettedContainer<Holder<Biome>>) biomeContainer).copy();
+        return new LevelChunkSection(section.getStates().copy(), biomes);
     }
 
     public int getTaskCount() {
@@ -185,7 +232,9 @@ public class VoxelIngestService {
         this.service.shutdown();
         while (!this.ingestQueue.isEmpty()) {
             //We need to manually release all our world locks
-            this.ingestQueue.pop().world.releaseRef();
+            IngestSection task = this.ingestQueue.pop();
+            task.world.releaseRef();
+            task.batch.finish(false);
         }
 
     }
@@ -208,14 +257,20 @@ public class VoxelIngestService {
 
     private boolean rawIngest0(WorldEngine engine, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
         engine.acquireRef();
-        this.ingestQueue.add(new IngestSection(x, y, z, engine, section, bl, sl));
+        IngestBatch batch = new IngestBatch(1);
+        IngestSection task = new IngestSection(x, y, z, engine, section, bl, sl, batch);
+        this.ingestQueue.add(task);
         try {
             this.service.execute();
             return true;
         } catch (Exception e) {
             Logger.error("Executing had an error: assume shutting down, aborting",e);
-            engine.releaseRef();//we must manually release
-            return false;
+            if (this.ingestQueue.remove(task)) {
+                engine.releaseRef();//we must manually release
+                batch.finish(false);
+                return false;
+            }
+            return true;
         }
     }
 

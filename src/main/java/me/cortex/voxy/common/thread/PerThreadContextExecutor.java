@@ -42,7 +42,7 @@ public class PerThreadContextExecutor extends TrackedObject {
     private static final ThreadLocal<ThreadObj> THREAD_CTX = ThreadLocal.withInitial(ThreadObj::new);
     private final WeakConcurrentCleanableHashMap<ThreadObj, ThreadContext> contexts = new WeakConcurrentCleanableHashMap<>(this::ctxCleaner); //TODO: a custom weak concurrent hashmap that can enqueue values when the value is purged
     private final Supplier<ThreadContext> contextFactory;
-    private final Consumer<Exception> exceptionHandler;
+    private final Consumer<Throwable> exceptionHandler;
 
     private final AtomicInteger currentRunning = new AtomicInteger();
     private volatile boolean isLive = true;
@@ -52,7 +52,7 @@ public class PerThreadContextExecutor extends TrackedObject {
             Logger.error("Executor had the following exception",e);
         });
     }
-    PerThreadContextExecutor(Supplier<Pair<Runnable, Runnable>> ctxFactory, Consumer<Exception> exceptionHandler) {
+    PerThreadContextExecutor(Supplier<Pair<Runnable, Runnable>> ctxFactory, Consumer<Throwable> exceptionHandler) {
         this.contextFactory = ()->new ThreadContext(ctxFactory.get());
         this.exceptionHandler = exceptionHandler;
     }
@@ -60,25 +60,34 @@ public class PerThreadContextExecutor extends TrackedObject {
     private void ctxCleaner(ThreadContext ctx) {
         try {
             ctx.cleanup.run();
-        } catch (Exception e) {
-            this.exceptionHandler.accept(e);
+        } catch (Throwable throwable) {
+            this.handleException(throwable);
+        }
+    }
+
+    private void handleException(Throwable throwable) {
+        try {
+            this.exceptionHandler.accept(throwable);
+        } catch (Throwable handlerFailure) {
+            Logger.error("Executor exception handler failed", handlerFailure);
+            Logger.error("Original executor failure", throwable);
         }
     }
 
     boolean run() {
         this.currentRunning.incrementAndGet();
-        if (!this.isLive) {
-            this.currentRunning.decrementAndGet();
-            this.exceptionHandler.accept(new IllegalStateException("Executor is in shutdown"));
-            return false;
-        }
-        var ctx = this.contexts.computeIfAbsent(THREAD_CTX.get(), this.contextFactory);
         try {
+            if (!this.isLive) {
+                this.handleException(new IllegalStateException("Executor is in shutdown"));
+                return false;
+            }
+            var ctx = this.contexts.computeIfAbsent(THREAD_CTX.get(), this.contextFactory);
             ctx.execute.run();
-        } catch (Exception e) {
-            this.exceptionHandler.accept(e);
+        } catch (Throwable throwable) {
+            this.handleException(throwable);
+        } finally {
+            this.currentRunning.decrementAndGet();
         }
-        this.currentRunning.decrementAndGet();
         return true;
     }
 
@@ -91,7 +100,7 @@ public class PerThreadContextExecutor extends TrackedObject {
             Thread.onSpinWait();//TODO: maybe add a sleep or something
         }
         for (var ctx : this.contexts.clear()) {
-            ctx.cleanup.run();
+            this.ctxCleaner(ctx);
         }
 
         this.free0();

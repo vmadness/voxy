@@ -44,11 +44,19 @@ public class SectionSerializationStorage extends SectionStorage {
         }
     }
 
+    @Override
+    public boolean hasSection(long sectionKey) {
+        return this.backend.getSectionData(sectionKey,
+                MEMORY_CACHE.get().createUntrackedUnfreeableReference()) != null;
+    }
+
 
     @Override
     public void saveSection(WorldSection section) {
-        var saveData = SaveLoadSystem3.serialize(section);
-        this.backend.setSectionData(section.key, saveData);
+        synchronized (section) {
+            var saveData = SaveLoadSystem3.serialize(section);
+            this.backend.setSectionData(section.key, saveData);
+        }
         //Note that savedData isnt freed (the save system uses a cache)
     }
 

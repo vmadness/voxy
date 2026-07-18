@@ -1,5 +1,6 @@
 package me.cortex.voxy.common.thread;
 
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.Pair;
 
 import java.util.ArrayList;
@@ -55,11 +56,16 @@ public class UnifiedServiceThreadPool {
     }
 
     private void workerThread() {
-        this.selfBlock.acquire();//This is stupid but it works
-
-        //We are exiting, remove self from list of threads
-        synchronized (this.threads) {
-            this.threads.remove(Thread.currentThread());
+        try {
+            this.selfBlock.acquire();//This is stupid but it works
+        } catch (Throwable throwable) {
+            // A bad job must not strand the worker in the bookkeeping list and make shutdown wait forever.
+            Logger.error("Dedicated Voxy worker terminated unexpectedly", throwable);
+        } finally {
+            //We are exiting, remove self from list of threads
+            synchronized (this.threads) {
+                this.threads.remove(Thread.currentThread());
+            }
         }
     }
 

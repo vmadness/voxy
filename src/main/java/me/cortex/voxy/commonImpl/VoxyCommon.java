@@ -8,6 +8,12 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 
 public class VoxyCommon implements ModInitializer {
+    /** API contract implemented by the 1.21.1 VoxyServer-compatible fork. */
+    public static final int VOXYSERVER_API_VERSION = 1;
+
+    public static int getVoxyServerApiVersion() {
+        return VOXYSERVER_API_VERSION;
+    }
     public static final String MOD_VERSION;
     public static final boolean IS_DEDICATED_SERVER;
     public static final boolean IS_IN_MINECRAFT;

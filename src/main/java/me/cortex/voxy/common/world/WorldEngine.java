@@ -84,6 +84,20 @@ public final class WorldEngine {
         return this.sectionTracker.acquire(pos, true);
     }
 
+    /** Exact non-caching membership check against the configured storage backend. */
+    public boolean hasStoredSection(long pos) {
+        if (!this.isLive) throw new IllegalStateException("World is not live");
+        return this.storage.hasSection(pos);
+    }
+
+    /** Acquires an active loaded section, or an exactly-known stored section, without caching misses. */
+    public WorldSection acquireIfLoadedOrStored(long pos) {
+        if (!this.isLive) throw new IllegalStateException("World is not live");
+        WorldSection loaded = this.sectionTracker.acquireIfLoaded(pos);
+        if (loaded != null) return loaded;
+        return this.storage.hasSection(pos) ? this.sectionTracker.acquire(pos, true) : null;
+    }
+
     public static final int POS_FORMAT_VERSION = 1;
 
     //TODO: Fixme/optimize, cause as the lvl gets higher, the size of x,y,z gets smaller so i can dynamically compact the format
