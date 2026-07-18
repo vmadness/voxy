@@ -1,5 +1,7 @@
 # Voxy mc_1211 — Improvement Notes
 
+Status update 2026-07-19: items 1.1, 1.2, 2.1-2.10, 3.1-3.6, 4.1-4.11 IMPLEMENTED in commit 2b32a0a3 (validated: compile green + native NVIDIA in-world run incl. renderer recreate, no crash dumps). Still open: 1.3, 3.7, 3.8, 3.9 (deliberately deferred — they live inside actively-developed WIP files; revisit when that work settles). 2.11 and section 5 remain awareness items.
+
 Compiled 2026-07-19 from a four-angle review (logic/correctness, memory, performance, quality) of the ported codebase, cross-checked against dev (`b164a6d9`). Each item: location, problem, impact, suggested fix, confidence. Ranked within sections. Items marked (P) are port-introduced; (D) exist in dev too.
 
 ## 1. Bugs / resource leaks (fix first)
